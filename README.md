@@ -2,6 +2,42 @@
 
 A modern, aesthetic, and productive macOS terminal setup built on **Ghostty + Zsh + Starship**, themed with **Catppuccin Mocha**. Every tool is installed via Homebrew and configured to work together out of the box.
 
+## Quick Install
+
+```bash
+git clone https://github.com/<you>/Awesome_Mac_Terminal_Setup.git
+cd Awesome_Mac_Terminal_Setup
+./install.sh
+```
+
+The installer is **safe to re-run** — Homebrew skips already-installed tools, and
+any existing config file is **backed up with a timestamp** (`<file>.bak.<unix-ts>`)
+before a new one is deployed.
+
+Flags:
+
+| Flag | Effect |
+|------|--------|
+| *(none)* | Install tools + deploy configs, then show an interactive AI-CLI menu |
+| `--all` | Install everything including all AI CLIs and skills, no prompts |
+| `--no-ai` | Install tools + configs only; skip AI CLIs and skills |
+
+### What the installer does
+
+1. Installs **Homebrew** if it's missing.
+2. Installs all **CLI tools** (`starship`, `eza`, `bat`, `fd`, `ripgrep`, `zoxide`, `btop`, `lazygit`, `git-delta`, `fnm`, `atuin`, `fzf`, `tldr`, `jq`, `glow`, and the zsh plugins).
+3. Installs the **Ghostty** terminal and the **JetBrainsMono Nerd Font** cask.
+4. **Deploys the config files** below, backing up any existing copies.
+5. Shows an **interactive menu** (↑/↓ to move, space to toggle, enter to confirm) to pick which AI coding CLIs to install — **Claude Code**, **Codex**, **Gemini CLI**. Selecting Claude Code also deploys the bundled `separated` theme.
+6. Optionally installs **Claude Code agent skills** (when Claude Code is selected).
+
+The bundled `.gitconfig` intentionally **omits your name/email** — set them after install:
+
+```bash
+git config --global user.name  "Your Name"
+git config --global user.email "you@example.com"
+```
+
 ## What Makes This Special
 
 - **Unified Catppuccin Mocha theme** across terminal, prompt, and git diff viewer — consistent dark aesthetic everywhere
@@ -43,6 +79,10 @@ A modern, aesthetic, and productive macOS terminal setup built on **Ghostty + Zs
 | `.config/ghostty.save` | Ghostty terminal appearance settings |
 | `.gitconfig` | Git config with delta as pager (side-by-side diffs) |
 | `.config/atuin/config.toml` | Atuin shell history settings |
+| `.claude/themes/separated.json` | Claude Code custom theme (deployed when Claude Code is selected) |
+
+> The deployable copies live in the repo's `configs/` directory; the installer
+> copies them into the locations above (backing up any existing files).
 
 ## Tools
 
@@ -186,6 +226,14 @@ cat data.json | jq '.items[0].name'    # Extract fields
 curl api.example.com | jq '.'          # Pretty-print API responses
 ```
 
+### glow — Markdown Renderer
+
+Renders Markdown in the terminal with styling and pager support. Aliased as `md`.
+
+```bash
+md README.md          # Render a Markdown file in the pager (glow -p)
+```
+
 ## Git Aliases
 
 | Alias | Command |
@@ -196,6 +244,7 @@ curl api.example.com | jq '.'          # Pretty-print API responses
 | `gp` | `git push` |
 | `gl` | `git log --oneline --graph --decorate --all` |
 | `lg` | `lazygit` |
+| `md` | `glow -p` |
 
 ## History Configuration
 

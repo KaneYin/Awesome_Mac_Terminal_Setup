@@ -1,0 +1,25 @@
+# Awesome Mac Terminal Setup: git config with delta as pager.
+#
+# NOTE: this file intentionally omits the [user] block. After deploying,
+# set your identity manually:
+#   git config --global user.name  "Your Name"
+#   git config --global user.email "you@example.com"
+[http]
+	postBuffer = 524288000
+	version = HTTP/1.1
+	lowSpeedLimit = 0
+	lowSpeedTime = 999999
+[core]
+	quotepath = false
+	pager = delta
+[interactive]
+	diffFilter = delta --color-only
+[delta]
+	navigate = true
+	dark = true
+	line-numbers = true
+	side-by-side = true
+[merge]
+	conflictstyle = diff3
+[diff]
+	colorMoved = default
