@@ -14,6 +14,11 @@
 #   ./install.sh --all           # install all AI CLIs and skills, no prompts
 #   ./install.sh --no-ai         # skip the AI CLIs and skills entirely
 #
+# The functions below are defined at the top level so the script can be sourced
+# by the unit tests in tests/ without running the installer. Running the file
+# directly (or via `curl ... | bash`) still executes main() — see the guard at
+# the very bottom.
+#
 set -euo pipefail
 
 # Directory this script lives in, so we can find the sibling configs/ dir even
@@ -21,20 +26,24 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
 
 # ---------------------------------------------------------------------------
-# Flags
+# Flags (defaults; parse_args overrides them from "$@")
 # ---------------------------------------------------------------------------
 INSTALL_ALL=0   # --all  : install every AI CLI + skills without prompting
 SKIP_AI=0       # --no-ai: skip AI CLIs and skills entirely
-for arg in "$@"; do
-  case "$arg" in
-    --all)   INSTALL_ALL=1 ;;
-    --no-ai) SKIP_AI=1 ;;
-    -h|--help)
-      sed -n '3,14p' "$0" | sed 's/^# \{0,1\}//'
-      exit 0 ;;
-    *) echo "Unknown option: $arg (use --all, --no-ai, or --help)" >&2; exit 1 ;;
-  esac
-done
+
+# parse_args "$@" — set INSTALL_ALL / SKIP_AI, or exit for --help / bad flags.
+parse_args() {
+  for arg in "$@"; do
+    case "$arg" in
+      --all)   INSTALL_ALL=1 ;;
+      --no-ai) SKIP_AI=1 ;;
+      -h|--help)
+        sed -n '3,14p' "${BASH_SOURCE[0]:-$0}" | sed 's/^# \{0,1\}//'
+        exit 0 ;;
+      *) echo "Unknown option: $arg (use --all, --no-ai, or --help)" >&2; exit 1 ;;
+    esac
+  done
+}
 
 # ---------------------------------------------------------------------------
 # Output helpers
@@ -117,34 +126,7 @@ multiselect() {
 }
 
 # ---------------------------------------------------------------------------
-# Preflight
-# ---------------------------------------------------------------------------
-[[ "$(uname -s)" == "Darwin" ]] || die "This setup targets macOS. Detected: $(uname -s)"
-
-# ---------------------------------------------------------------------------
-# 1. Homebrew
-# ---------------------------------------------------------------------------
-if ! command -v brew >/dev/null 2>&1; then
-  info "Homebrew not found — installing it"
-  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-
-  # Make brew available in this shell session (Apple Silicon vs Intel paths).
-  if [[ -x /opt/homebrew/bin/brew ]]; then
-    eval "$(/opt/homebrew/bin/brew shellenv)"
-  elif [[ -x /usr/local/bin/brew ]]; then
-    eval "$(/usr/local/bin/brew shellenv)"
-  fi
-else
-  ok "Homebrew already installed"
-fi
-
-command -v brew >/dev/null 2>&1 || die "brew is still not on PATH; open a new terminal and re-run."
-
-info "Updating Homebrew"
-brew update
-
-# ---------------------------------------------------------------------------
-# 2. Formulae (CLI tools) — everything listed in the README
+# Formulae (CLI tools) — everything listed in the README
 # ---------------------------------------------------------------------------
 FORMULAE=(
   starship                  # cross-shell prompt
@@ -169,7 +151,7 @@ FORMULAE=(
 )
 
 # ---------------------------------------------------------------------------
-# 3. Casks (apps + fonts)
+# Casks (apps + fonts)
 # ---------------------------------------------------------------------------
 CASKS=(
   ghostty                       # GPU-accelerated terminal emulator
@@ -196,19 +178,10 @@ install_cask() {
   fi
 }
 
-info "Installing CLI tools"
-for f in "${FORMULAE[@]}"; do install_formula "$f"; done
-
-info "Installing apps and fonts"
-for c in "${CASKS[@]}"; do install_cask "$c"; done
-
-# ---------------------------------------------------------------------------
-# 4. Deploy config files
-# ---------------------------------------------------------------------------
-# Copies the bundled configs into place. Existing files are backed up with a
-# timestamp before being replaced; identical files are left untouched.
-#
 # deploy_config <src-relative-to-configs/> <dest-absolute>
+# Copies a bundled config into place. A missing source is skipped with a warning,
+# an identical destination is left untouched, and any differing existing file is
+# backed up with a unix-timestamp suffix before being replaced.
 deploy_config() {
   local src="$SCRIPT_DIR/configs/$1" dest="$2"
 
@@ -234,17 +207,6 @@ deploy_config() {
   ok "Deployed ${dest/#$HOME/~}"
 }
 
-info "Deploying config files"
-deploy_config "zshrc"             "$HOME/.zshrc"
-deploy_config "starship.toml"     "$HOME/.config/starship.toml"
-deploy_config "ghostty.save"      "$HOME/.config/ghostty.save"
-deploy_config "gitconfig"         "$HOME/.gitconfig"
-deploy_config "atuin/config.toml" "$HOME/.config/atuin/config.toml"
-warn "Set your git identity if you haven't:  git config --global user.name/user.email"
-
-# ---------------------------------------------------------------------------
-# 5. AI coding CLIs (Claude Code, Codex, Gemini CLI) — user's choice
-# ---------------------------------------------------------------------------
 install_claude_code() {
   # Claude Code ships its own native installer (no Node required).
   if command -v claude >/dev/null 2>&1; then
@@ -280,43 +242,6 @@ install_claude_theme() {
   info 'Activate the theme inside Claude Code with /theme (custom:separated).'
 }
 
-# Decide which AI CLIs to install: --all selects everything, --no-ai selects
-# nothing, a non-interactive shell is skipped, otherwise show the menu.
-CLAUDE_REQUESTED=0
-WANT_CLAUDE=0; WANT_CODEX=0; WANT_GEMINI=0
-
-if (( SKIP_AI )); then
-  warn "Skipping AI CLIs (--no-ai)"
-elif (( INSTALL_ALL )); then
-  WANT_CLAUDE=1; WANT_CODEX=1; WANT_GEMINI=1
-elif [[ ! -t 0 ]]; then
-  warn "Non-interactive shell — skipping the AI CLI menu."
-  warn "Re-run ./install.sh in a terminal, or use --all, to install AI CLIs."
-else
-  multiselect "AI coding CLIs — choose which to install:" \
-    "Claude Code" "Codex" "Gemini CLI"
-  for idx in "${MULTISELECT_RESULT[@]}"; do
-    case "$idx" in
-      0) WANT_CLAUDE=1 ;;
-      1) WANT_CODEX=1 ;;
-      2) WANT_GEMINI=1 ;;
-    esac
-  done
-fi
-
-if (( WANT_CLAUDE )); then
-  install_claude_code
-  install_claude_theme
-  CLAUDE_REQUESTED=1
-fi
-(( WANT_CODEX ))  && install_codex
-(( WANT_GEMINI )) && install_gemini
-
-# ---------------------------------------------------------------------------
-# 6. Claude Code agent skills (plugins)
-# ---------------------------------------------------------------------------
-# Skills are installed as Claude Code plugins. This requires the `claude` CLI,
-# so we only offer it when Claude Code is available.
 install_claude_skills() {
   local marketplace="$1" plugin="$2"
   info "Installing skill: $plugin"
@@ -330,31 +255,108 @@ install_claude_skills() {
   fi
 }
 
-if (( SKIP_AI )); then
-  : # nothing to do
-elif command -v claude >/dev/null 2>&1 && { (( CLAUDE_REQUESTED )) || (( INSTALL_ALL )); }; then
-  if confirm "Install Claude Code agent skills (superpowers, andrej-karpathy-skills)?"; then
-    install_claude_skills "claude-plugins-official" "superpowers@claude-plugins-official"
-    install_claude_skills "karpathy-skills"         "andrej-karpathy-skills@karpathy-skills"
+# select_ai_clis — decide which AI CLIs to install, setting WANT_CLAUDE /
+# WANT_CODEX / WANT_GEMINI. --all selects everything, --no-ai selects nothing, a
+# non-interactive shell is skipped, otherwise the checkbox menu is shown.
+select_ai_clis() {
+  WANT_CLAUDE=0; WANT_CODEX=0; WANT_GEMINI=0
+  if (( SKIP_AI )); then
+    warn "Skipping AI CLIs (--no-ai)"
+  elif (( INSTALL_ALL )); then
+    WANT_CLAUDE=1; WANT_CODEX=1; WANT_GEMINI=1
+  elif [[ ! -t 0 ]]; then
+    warn "Non-interactive shell — skipping the AI CLI menu."
+    warn "Re-run ./install.sh in a terminal, or use --all, to install AI CLIs."
+  else
+    multiselect "AI coding CLIs — choose which to install:" \
+      "Claude Code" "Codex" "Gemini CLI"
+    for idx in "${MULTISELECT_RESULT[@]}"; do
+      case "$idx" in
+        0) WANT_CLAUDE=1 ;;
+        1) WANT_CODEX=1 ;;
+        2) WANT_GEMINI=1 ;;
+      esac
+    done
   fi
-fi
+}
 
 # ---------------------------------------------------------------------------
-# 7. Python environment report
+# main — the actual installation procedure (only runs when the script is
+# executed, not when it's sourced by the test suite).
 # ---------------------------------------------------------------------------
-# uv is now installed, so surface the current Python picture (interpreters,
-# conda/brew/uv installs, and any redundant copies). Read-only.
-if [[ -n "$SCRIPT_DIR" && -x "$SCRIPT_DIR/python-env-report.sh" ]]; then
-  info "Detecting your Python environment"
-  "$SCRIPT_DIR/python-env-report.sh" || warn "Python env report failed (non-fatal)."
-fi
+main() {
+  parse_args "$@"
 
-# ---------------------------------------------------------------------------
-# Done
-# ---------------------------------------------------------------------------
-echo
-ok "All tools installed and configs deployed."
-cat <<'EOF'
+  # --- Preflight ---
+  [[ "$(uname -s)" == "Darwin" ]] || die "This setup targets macOS. Detected: $(uname -s)"
+
+  # --- 1. Homebrew ---
+  if ! command -v brew >/dev/null 2>&1; then
+    info "Homebrew not found — installing it"
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+    # Make brew available in this shell session (Apple Silicon vs Intel paths).
+    if [[ -x /opt/homebrew/bin/brew ]]; then
+      eval "$(/opt/homebrew/bin/brew shellenv)"
+    elif [[ -x /usr/local/bin/brew ]]; then
+      eval "$(/usr/local/bin/brew shellenv)"
+    fi
+  else
+    ok "Homebrew already installed"
+  fi
+
+  command -v brew >/dev/null 2>&1 || die "brew is still not on PATH; open a new terminal and re-run."
+
+  info "Updating Homebrew"
+  brew update
+
+  # --- 2 & 3. Formulae + casks ---
+  info "Installing CLI tools"
+  for f in "${FORMULAE[@]}"; do install_formula "$f"; done
+
+  info "Installing apps and fonts"
+  for c in "${CASKS[@]}"; do install_cask "$c"; done
+
+  # --- 4. Deploy config files ---
+  info "Deploying config files"
+  deploy_config "zshrc"             "$HOME/.zshrc"
+  deploy_config "starship.toml"     "$HOME/.config/starship.toml"
+  deploy_config "ghostty.save"      "$HOME/.config/ghostty.save"
+  deploy_config "gitconfig"         "$HOME/.gitconfig"
+  deploy_config "atuin/config.toml" "$HOME/.config/atuin/config.toml"
+  warn "Set your git identity if you haven't:  git config --global user.name/user.email"
+
+  # --- 5. AI coding CLIs (Claude Code, Codex, Gemini CLI) ---
+  local CLAUDE_REQUESTED=0
+  select_ai_clis
+  if (( WANT_CLAUDE )); then
+    install_claude_code
+    install_claude_theme
+    CLAUDE_REQUESTED=1
+  fi
+  (( WANT_CODEX ))  && install_codex
+  (( WANT_GEMINI )) && install_gemini
+
+  # --- 6. Claude Code agent skills (plugins) ---
+  if (( SKIP_AI )); then
+    : # nothing to do
+  elif command -v claude >/dev/null 2>&1 && { (( CLAUDE_REQUESTED )) || (( INSTALL_ALL )); }; then
+    if confirm "Install Claude Code agent skills (superpowers, andrej-karpathy-skills)?"; then
+      install_claude_skills "claude-plugins-official" "superpowers@claude-plugins-official"
+      install_claude_skills "karpathy-skills"         "andrej-karpathy-skills@karpathy-skills"
+    fi
+  fi
+
+  # --- 7. Python environment report (read-only) ---
+  if [[ -n "$SCRIPT_DIR" && -x "$SCRIPT_DIR/python-env-report.sh" ]]; then
+    info "Detecting your Python environment"
+    "$SCRIPT_DIR/python-env-report.sh" || warn "Python env report failed (non-fatal)."
+  fi
+
+  # --- Done ---
+  echo
+  ok "All tools installed and configs deployed."
+  cat <<'EOF'
 
 Next steps:
   • Configs were deployed to ~/.zshrc, ~/.config/starship.toml,
@@ -374,3 +376,10 @@ Next steps:
       /plugin install andrej-karpathy-skills@karpathy-skills
   • Re-check your Python setup anytime with:  ./python-env-report.sh
 EOF
+}
+
+# Run main() only when executed or piped (curl | bash), not when sourced by the
+# test suite. `return` outside a function succeeds only in a sourced context.
+if ! (return 0 2>/dev/null); then
+  main "$@"
+fi

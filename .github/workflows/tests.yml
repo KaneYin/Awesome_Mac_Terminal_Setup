@@ -1,0 +1,29 @@
+name: Tests
+
+# Run the shell unit-test suite on every push and every pull request, so a
+# merge can only land when the tests are green.
+on: [push, pull_request]
+
+# If a branch is pushed again while its run is still going, cancel the old one.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Shell unit tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false          # report both OSes even if one fails
+      matrix:
+        # ubuntu = fast Linux/bash 5 check; macos = the real target (bash 3.2).
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Show the bash version under test
+        run: bash --version
+
+      - name: Run the test suite
+        run: bash tests/run.sh

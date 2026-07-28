@@ -276,6 +276,20 @@ md README.md          # Render a Markdown file in the pager (glow -p)
 | `lg` | `lazygit` |
 | `md` | `glow -p` |
 
+## Tests
+
+The two shell scripts (`install.sh`, `python-env-report.sh`) have a
+dependency-free unit-test suite that runs on the stock macOS bash:
+
+```bash
+./tests/run.sh
+```
+
+See [`docs/TESTING.md`](docs/TESTING.md) for an overview of all 36 tests and
+what each covers.
+
+CI runs this same suite on every push and PR — see [`docs/CI.md`](docs/CI.md).
+
 ## History Configuration
 
 - **50,000 lines** of history retained
