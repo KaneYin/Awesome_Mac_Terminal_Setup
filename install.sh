@@ -162,6 +162,7 @@ FORMULAE=(
   lazygit                   # git TUI
   git-delta                 # git diff viewer (delta)
   fnm                       # node version manager
+  uv                        # fast python package + version manager
   tldr                      # simplified man pages
   jq                        # json processor
   glow                      # markdown renderer (md alias)
@@ -339,6 +340,16 @@ elif command -v claude >/dev/null 2>&1 && { (( CLAUDE_REQUESTED )) || (( INSTALL
 fi
 
 # ---------------------------------------------------------------------------
+# 7. Python environment report
+# ---------------------------------------------------------------------------
+# uv is now installed, so surface the current Python picture (interpreters,
+# conda/brew/uv installs, and any redundant copies). Read-only.
+if [[ -n "$SCRIPT_DIR" && -x "$SCRIPT_DIR/python-env-report.sh" ]]; then
+  info "Detecting your Python environment"
+  "$SCRIPT_DIR/python-env-report.sh" || warn "Python env report failed (non-fatal)."
+fi
+
+# ---------------------------------------------------------------------------
 # Done
 # ---------------------------------------------------------------------------
 echo
@@ -361,4 +372,5 @@ Next steps:
   • If a skill failed to auto-install, open Claude Code and run, e.g.:
       /plugin install superpowers@claude-plugins-official
       /plugin install andrej-karpathy-skills@karpathy-skills
+  • Re-check your Python setup anytime with:  ./python-env-report.sh
 EOF

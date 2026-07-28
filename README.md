@@ -24,12 +24,13 @@ Flags:
 
 ### What the installer does
 
-1. Installs **Homebrew** if it's missing.
-2. Installs all **CLI tools** (`starship`, `eza`, `bat`, `fd`, `ripgrep`, `zoxide`, `btop`, `lazygit`, `git-delta`, `fnm`, `atuin`, `fzf`, `tldr`, `jq`, `glow`, and the zsh plugins).
-3. Installs the **Ghostty** terminal and the **JetBrainsMono Nerd Font** cask.
+1. Installs [**Homebrew**](https://brew.sh) if it's missing.
+2. Installs all **CLI tools** (`starship`, `eza`, `bat`, `fd`, `ripgrep`, `zoxide`, `btop`, `lazygit`, `git-delta`, `fnm`, `uv`, `atuin`, `fzf`, `tldr`, `jq`, `glow`, and the zsh plugins).
+3. Installs the [**Ghostty**](https://ghostty.org) terminal and the [**JetBrainsMono Nerd Font**](https://www.nerdfonts.com/) cask.
 4. **Deploys the config files** below, backing up any existing copies.
 5. Shows an **interactive menu** (↑/↓ to move, space to toggle, enter to confirm) to pick which AI coding CLIs to install — **Claude Code**, **Codex**, **Gemini CLI**. Selecting Claude Code also deploys the bundled `separated` theme.
 6. Optionally installs **Claude Code agent skills** (when Claude Code is selected).
+7. Runs [`python-env-report.sh`](python-env-report.sh) to report your current Python environment (read-only — see [uv](#uv--python-package--version-manager) below).
 
 The bundled `.gitconfig` intentionally **omits your name/email** — set them after install:
 
@@ -86,7 +87,7 @@ git config --global user.email "you@example.com"
 
 ## Tools
 
-### Ghostty — Terminal Emulator
+### [Ghostty](https://ghostty.org) — Terminal Emulator
 
 A GPU-accelerated terminal emulator. This setup uses:
 
@@ -94,7 +95,7 @@ A GPU-accelerated terminal emulator. This setup uses:
 - **Theme**: Catppuccin Mocha — warm dark palette with pastel accents
 - **Tweaks**: semi-transparent background (94% opacity), hidden titlebar, auto copy-on-select
 
-### Starship — Cross-Shell Prompt
+### [Starship](https://starship.rs) — Cross-Shell Prompt
 
 A fast, customizable prompt written in Rust. The config defines a **powerline-style multi-segment prompt** with Catppuccin Mocha colors:
 
@@ -108,13 +109,13 @@ A fast, customizable prompt written in Rust. The config defines a **powerline-st
 
 ### Zsh Plugins
 
-**zsh-autosuggestions** — suggests commands as you type based on history and completions. Accept with `→` (right arrow).
+**[zsh-autosuggestions](https://github.com/zsh-users/zsh-autosuggestions)** — suggests commands as you type based on history and completions. Accept with `→` (right arrow).
 
-**zsh-syntax-highlighting** — colors commands green/red as you type (valid vs invalid), highlights strings, paths, and options in real-time.
+**[zsh-syntax-highlighting](https://github.com/zsh-users/zsh-syntax-highlighting)** — colors commands green/red as you type (valid vs invalid), highlights strings, paths, and options in real-time.
 
-**zsh-completions** — additional completion definitions for hundreds of CLI tools beyond Zsh's built-in completions.
+**[zsh-completions](https://github.com/zsh-users/zsh-completions)** — additional completion definitions for hundreds of CLI tools beyond Zsh's built-in completions.
 
-### Atuin — Shell History
+### [Atuin](https://atuin.sh) — Shell History
 
 Replaces the default `Ctrl+R` history search with a full-screen fuzzy search TUI. Features:
 
@@ -123,7 +124,7 @@ Replaces the default `Ctrl+R` history search with a full-screen fuzzy search TUI
 - **Context-aware** — filter by session, directory, or host
 - Press `↑` to browse history, `Enter` to execute, `Tab` to edit before running
 
-### fzf — Fuzzy Finder
+### [fzf](https://github.com/junegunn/fzf) — Fuzzy Finder
 
 A general-purpose fuzzy finder. Integrated keybindings:
 
@@ -132,7 +133,7 @@ A general-purpose fuzzy finder. Integrated keybindings:
 - `Alt+C` — fuzzy `cd` into directories (uses `fd`)
 - Configured with `--height 40% --layout=reverse --border` for inline display
 
-### eza — Modern `ls`
+### [eza](https://eza.rocks) — Modern `ls`
 
 A modern replacement for `ls` with icons, git status, and color. Aliases configured:
 
@@ -143,7 +144,7 @@ A modern replacement for `ls` with icons, git status, and color. Aliases configu
 | `la` | `eza -a --icons --group-directories-first` | All files including hidden |
 | `tree` | `eza --tree --icons --level=2` | Tree view, 2 levels deep |
 
-### bat — Modern `cat`
+### [bat](https://github.com/sharkdp/bat) — Modern `cat`
 
 A `cat` replacement with syntax highlighting, line numbers, and git diff markers. Aliased as `cat`.
 
@@ -151,7 +152,7 @@ A `cat` replacement with syntax highlighting, line numbers, and git diff markers
 - Shows git changes in the gutter (`+`, `-`, `~`)
 - Pipes nicely into other tools (auto-detects non-interactive mode)
 
-### fd — Modern `find`
+### [fd](https://github.com/sharkdp/fd) — Modern `find`
 
 A fast, user-friendly alternative to `find`. Aliased as `find`.
 
@@ -160,7 +161,7 @@ A fast, user-friendly alternative to `find`. Aliased as `find`.
 - Simpler syntax: `fd pattern` instead of `find . -name "*pattern*"`
 - Used by `fzf` as the file source for `Ctrl+T` and `Alt+C`
 
-### ripgrep (rg) — Modern `grep`
+### [ripgrep (rg)](https://github.com/BurntSushi/ripgrep) — Modern `grep`
 
 A blazing-fast search tool. Aliased as `grep`.
 
@@ -169,7 +170,7 @@ A blazing-fast search tool. Aliased as `grep`.
 - Smart case sensitivity
 - Example: `grep "TODO"` searches all files in the current directory tree
 
-### zoxide — Smart `cd`
+### [zoxide](https://github.com/ajeetdsouza/zoxide) — Smart `cd`
 
 A smarter `cd` that learns your most-used directories. Initialized with `eval "$(zoxide init zsh)"`.
 
@@ -177,11 +178,11 @@ A smarter `cd` that learns your most-used directories. Initialized with `eval "$
 - `zi foo` — interactive selection when multiple matches exist
 - Learns from your `cd` usage automatically
 
-### btop — System Monitor
+### [btop](https://github.com/aristocratos/btop) — System Monitor
 
 A beautiful, feature-rich system monitor. Aliased as `top`. Shows CPU, memory, disks, network, and processes with a rich TUI.
 
-### lazygit — Git TUI
+### [lazygit](https://github.com/jesseduffield/lazygit) — Git TUI
 
 A terminal UI for git. Aliased as `lg`.
 
@@ -189,7 +190,7 @@ A terminal UI for git. Aliased as `lg`.
 - Visual diff viewer, branch management, stash management
 - Interactive rebase with drag-and-drop commits
 
-### delta — Git Diff Viewer
+### [delta](https://github.com/dandavison/delta) — Git Diff Viewer
 
 Configured as the default git pager in `.gitconfig`. Features:
 
@@ -198,7 +199,7 @@ Configured as the default git pager in `.gitconfig`. Features:
 - **Syntax highlighting** in diffs
 - **Navigate mode** — use `n`/`N` to jump between files in large diffs
 
-### fnm — Node.js Version Manager
+### [fnm](https://github.com/Schniz/fnm) — Node.js Version Manager
 
 Fast Node.js version manager written in Rust. Configured with `--use-on-cd` to automatically switch Node versions when entering a directory with `.node-version` or `.nvmrc`.
 
@@ -208,7 +209,36 @@ fnm use 22            # Switch to Node 22
 fnm default 22        # Set default version
 ```
 
-### tldr — Simplified Man Pages
+### [uv](https://github.com/astral-sh/uv) — Python Package & Version Manager
+
+An extremely fast Python package and project manager written in Rust, replacing `pip`, `pyenv`, `virtualenv`, and `poetry`. It downloads and manages Python interpreters on demand, so you don't need a separate version manager.
+
+```bash
+uv python install 3.13   # Install a Python interpreter
+uv venv                  # Create a virtual environment
+uv sync                  # Install deps from pyproject.toml/uv.lock
+uv run python main.py    # Run inside the project environment
+uv python list           # List installed + available interpreters
+```
+
+### [`python-env-report.sh`](python-env-report.sh) — Python Environment Detector
+
+A bundled, **read-only** helper script (it never installs or removes anything).
+`install.sh` runs it at the end, and you can re-run it anytime:
+
+```bash
+./python-env-report.sh
+```
+
+It reports:
+
+- which interpreter `python3` actually resolves to, and every `python3` on `PATH`
+- `uv`-managed, Homebrew, conda, python.org-framework, and macOS-system Pythons
+- Homebrew pythons that are safe to keep (a formula depends on them) vs. worth reviewing
+- conda environments with their versions and on-disk sizes
+- a redundancy check flagging when the same `major.minor` is provided by several installs
+
+### [tldr](https://tldr.sh) — Simplified Man Pages
 
 Community-driven simplified help pages. Shows practical examples instead of exhaustive documentation.
 
@@ -217,7 +247,7 @@ tldr tar              # Quick examples for tar
 tldr git rebase       # Quick examples for git rebase
 ```
 
-### jq — JSON Processor
+### [jq](https://jqlang.github.io/jq/) — JSON Processor
 
 A lightweight command-line JSON processor.
 
@@ -226,7 +256,7 @@ cat data.json | jq '.items[0].name'    # Extract fields
 curl api.example.com | jq '.'          # Pretty-print API responses
 ```
 
-### glow — Markdown Renderer
+### [glow](https://github.com/charmbracelet/glow) — Markdown Renderer
 
 Renders Markdown in the terminal with styling and pager support. Aliased as `md`.
 
