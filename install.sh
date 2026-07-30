@@ -235,6 +235,18 @@ install_gemini() {
   fi
 }
 
+install_cmux() {
+  # cmux is a Ghostty-based terminal for AI coding agents, distributed as a
+  # Homebrew cask from its own tap (manaflow-ai/cmux).
+  if brew list --cask cmux >/dev/null 2>&1; then
+    ok "cmux already installed"
+  else
+    info "Tapping manaflow-ai/cmux"
+    brew tap manaflow-ai/cmux
+    install_cask cmux
+  fi
+}
+
 # Deploy the bundled Claude Code theme (file only; activate it with /theme or
 # by setting "theme": "custom:separated" in ~/.claude/settings.json).
 install_claude_theme() {
@@ -255,26 +267,28 @@ install_claude_skills() {
   fi
 }
 
-# select_ai_clis — decide which AI CLIs to install, setting WANT_CLAUDE /
-# WANT_CODEX / WANT_GEMINI. --all selects everything, --no-ai selects nothing, a
-# non-interactive shell is skipped, otherwise the checkbox menu is shown.
+# select_ai_clis — decide which AI coding tools to install, setting WANT_CLAUDE
+# / WANT_CODEX / WANT_GEMINI / WANT_CMUX. --all selects everything, --no-ai
+# selects nothing, a non-interactive shell is skipped, otherwise the checkbox
+# menu is shown.
 select_ai_clis() {
-  WANT_CLAUDE=0; WANT_CODEX=0; WANT_GEMINI=0
+  WANT_CLAUDE=0; WANT_CODEX=0; WANT_GEMINI=0; WANT_CMUX=0
   if (( SKIP_AI )); then
-    warn "Skipping AI CLIs (--no-ai)"
+    warn "Skipping AI coding tools (--no-ai)"
   elif (( INSTALL_ALL )); then
-    WANT_CLAUDE=1; WANT_CODEX=1; WANT_GEMINI=1
+    WANT_CLAUDE=1; WANT_CODEX=1; WANT_GEMINI=1; WANT_CMUX=1
   elif [[ ! -t 0 ]]; then
-    warn "Non-interactive shell — skipping the AI CLI menu."
-    warn "Re-run ./install.sh in a terminal, or use --all, to install AI CLIs."
+    warn "Non-interactive shell — skipping the AI tools menu."
+    warn "Re-run ./install.sh in a terminal, or use --all, to install AI tools."
   else
-    multiselect "AI coding CLIs — choose which to install:" \
-      "Claude Code" "Codex" "Gemini CLI"
+    multiselect "AI coding tools — choose which to install:" \
+      "Claude Code" "Codex" "Gemini CLI" "cmux (AI-agent terminal)"
     for idx in "${MULTISELECT_RESULT[@]}"; do
       case "$idx" in
         0) WANT_CLAUDE=1 ;;
         1) WANT_CODEX=1 ;;
         2) WANT_GEMINI=1 ;;
+        3) WANT_CMUX=1 ;;
       esac
     done
   fi
@@ -336,6 +350,7 @@ main() {
   fi
   (( WANT_CODEX ))  && install_codex
   (( WANT_GEMINI )) && install_gemini
+  (( WANT_CMUX ))   && install_cmux
 
   # --- 6. Claude Code agent skills (plugins) ---
   if (( SKIP_AI )); then

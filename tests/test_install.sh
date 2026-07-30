@@ -176,4 +176,24 @@ test_install_cask_installs_when_missing() {
   assert_contains "$o_out" "BREW_CASK ghostty" "brew install --cask called for the cask"
 }
 
+test_install_cmux_taps_then_installs_when_missing() {
+  load
+  brew() {
+    if [[ "$1 $2" == "list --cask" ]]; then return 1; fi
+    if [[ "$1" == "tap" ]]; then echo "BREW_TAP $2"; return 0; fi
+    if [[ "$1" == "install" && "$2" == "--cask" ]]; then echo "BREW_CASK $3"; return 0; fi
+  }
+  capture o install_cmux
+  assert_contains "$o_out" "BREW_TAP manaflow-ai/cmux" "cmux tap added before install"
+  assert_contains "$o_out" "BREW_CASK cmux" "cmux cask installed"
+}
+
+test_install_cmux_skips_when_present() {
+  load
+  brew() { [[ "$1 $2" == "list --cask" ]] && return 0; return 0; }
+  capture o install_cmux
+  assert_contains "$o_out" "already installed" "present cmux is skipped"
+  assert_not_contains "$o_out" "BREW_TAP" "no tap attempted when already installed"
+}
+
 run_tests

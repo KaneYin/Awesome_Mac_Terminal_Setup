@@ -26,10 +26,10 @@ bash tests/test_python_env_report.sh
 |------|------------|
 | `tests/lib.sh` | The harness: assertions + a `run_tests` discovery/runner |
 | `tests/run.sh` | Runs all `tests/test_*.sh` files and aggregates the result |
-| `tests/test_install.sh` | 19 tests for `install.sh` |
+| `tests/test_install.sh` | 21 tests for `install.sh` |
 | `tests/test_python_env_report.sh` | 17 tests for `python-env-report.sh` |
 
-**36 tests total.**
+**38 tests total.**
 
 ## How it works
 

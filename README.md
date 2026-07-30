@@ -28,7 +28,7 @@ Flags:
 2. Installs all **CLI tools** (`starship`, `eza`, `bat`, `fd`, `ripgrep`, `zoxide`, `btop`, `lazygit`, `git-delta`, `fnm`, `uv`, `atuin`, `fzf`, `tldr`, `jq`, `glow`, and the zsh plugins).
 3. Installs the [**Ghostty**](https://ghostty.org) terminal and the [**JetBrainsMono Nerd Font**](https://www.nerdfonts.com/) cask.
 4. **Deploys the config files** below, backing up any existing copies.
-5. Shows an **interactive menu** (↑/↓ to move, space to toggle, enter to confirm) to pick which AI coding CLIs to install — **Claude Code**, **Codex**, **Gemini CLI**. Selecting Claude Code also deploys the bundled `separated` theme.
+5. Shows an **interactive menu** (↑/↓ to move, space to toggle, enter to confirm) to pick which AI coding tools to install — **Claude Code**, **Codex**, **Gemini CLI**, and [**cmux**](#cmux--ai-agent-terminal) (a Ghostty-based terminal for AI agents). Selecting Claude Code also deploys the bundled `separated` theme.
 6. Optionally installs **Claude Code agent skills** (when Claude Code is selected).
 7. Runs [`python-env-report.sh`](python-env-report.sh) to report your current Python environment (read-only — see [uv](#uv--python-package--version-manager) below).
 
@@ -264,6 +264,23 @@ Renders Markdown in the terminal with styling and pager support. Aliased as `md`
 md README.md          # Render a Markdown file in the pager (glow -p)
 ```
 
+### [cmux](https://github.com/manaflow-ai/cmux) — AI-Agent Terminal
+
+An open-source, Ghostty-based macOS terminal with **vertical tabs and notifications for AI coding agents**, built for multitasking, organization, and programmability. Unlike the other CLIs in this setup, cmux is a full terminal application — it's offered as an **optional pick in the installer's AI tools menu** rather than installed by default.
+
+- **Agent-aware notifications** — visual rings around panes and sidebar badges when an agent needs your attention
+- **Vertical & horizontal tabs** showing git branch, PR status, working directory, and port info
+- **Built-in browser** with a scriptable automation API for agents to drive
+- **SSH workspaces**, **session restore** (layout, directories, scrollback, agent state), and a fully programmable **CLI + Unix-socket API**
+- Native Swift/AppKit app rendering via libghostty; free and open source (GPL-3.0-or-later)
+
+The installer adds cmux's Homebrew tap and installs the cask; you can also do it manually:
+
+```bash
+brew tap manaflow-ai/cmux
+brew install --cask cmux
+```
+
 ## Git Aliases
 
 | Alias | Command |
@@ -285,7 +302,7 @@ dependency-free unit-test suite that runs on the stock macOS bash:
 ./tests/run.sh
 ```
 
-See [`docs/TESTING.md`](docs/TESTING.md) for an overview of all 36 tests and
+See [`docs/TESTING.md`](docs/TESTING.md) for an overview of all 38 tests and
 what each covers.
 
 CI runs this same suite on every push and PR — see [`docs/CI.md`](docs/CI.md).
