@@ -27,9 +27,9 @@ bash tests/test_python_env_report.sh
 | `tests/lib.sh` | The harness: assertions + a `run_tests` discovery/runner |
 | `tests/run.sh` | Runs all `tests/test_*.sh` files and aggregates the result |
 | `tests/test_install.sh` | 21 tests for `install.sh` |
-| `tests/test_python_env_report.sh` | 25 tests for `python-env-report.sh` |
+| `tests/test_python_env_report.sh` | 31 tests for `python-env-report.sh` |
 
-**46 tests total.**
+**52 tests total.**
 
 ## How it works
 
@@ -113,14 +113,18 @@ assertion aborts that test and prints a diff-style message.
 
 ### PATH and Homebrew probe safety
 - Duplicate and missing PATH entries are reported.
-- Successful Homebrew probes distinguish dependents from an empty result.
-- Failed Homebrew probes remain `unknown`, even when failure writes to stdout.
+- Homebrew ownership distinguishes required, explicitly requested, and
+  `autoremove --dry-run` formulae.
 - Failed uv inventory remains `unknown` and retains a diagnostic reason.
 - Active and split Conda command resolution are distinguished.
+- Invalid Conda JSON is a failure, not an empty environment list.
+- Slow probes terminate at their deadline and stop after the total report budget.
+- Broken version output and symlink cycles are rejected.
 
 ### `summarize_overlap` (manager-aware installation overlap)
 - One provider is named without suggesting removal.
 - Multiple managers for the same series are counted and named.
+- Separate environments owned by the same manager are counted independently.
 - Matching versions explicitly do not imply that an installation is removable.
 - Blank input produces no summary lines.
 

@@ -18,14 +18,14 @@ load() { source "$TARGET"; set +u; }
 test_realpath_p_plain_file_unchanged() {
   load
   local t; t="$(mktemp -d)"; : > "$t/regular"
-  assert_eq "$t/regular" "$(realpath_p "$t/regular")" "plain file returned as-is"
+  assert_eq "$(cd -P "$t" && pwd)/regular" "$(realpath_p "$t/regular")" "plain file canonicalized"
 }
 
 test_realpath_p_single_symlink() {
   load
   local t; t="$(mktemp -d)"; : > "$t/target"
   ln -s "$t/target" "$t/link"
-  assert_eq "$t/target" "$(realpath_p "$t/link")" "single symlink resolves to target"
+  assert_eq "$(cd -P "$t" && pwd)/target" "$(realpath_p "$t/link")" "single symlink resolves to target"
 }
 
 test_realpath_p_chained_symlinks() {
@@ -33,14 +33,21 @@ test_realpath_p_chained_symlinks() {
   local t; t="$(mktemp -d)"; : > "$t/c"
   ln -s "$t/c" "$t/b"
   ln -s "$t/b" "$t/a"
-  assert_eq "$t/c" "$(realpath_p "$t/a")" "chained symlinks resolve to final target"
+  assert_eq "$(cd -P "$t" && pwd)/c" "$(realpath_p "$t/a")" "chained symlinks resolve to final target"
 }
 
 test_realpath_p_relative_symlink() {
   load
   local t; t="$(mktemp -d)"; : > "$t/realfile"
   ( cd "$t" && ln -s realfile rel )
-  assert_eq "$t/realfile" "$(realpath_p "$t/rel")" "relative symlink resolves against its dir"
+  assert_eq "$(cd -P "$t" && pwd)/realfile" "$(realpath_p "$t/rel")" "relative symlink resolves against its dir"
+}
+
+test_realpath_p_rejects_symlink_cycle() {
+  load
+  local t; t="$(mktemp -d)"; ln -s "$t/b" "$t/a"; ln -s "$t/a" "$t/b"
+  local rc; realpath_p "$t/a" >/dev/null 2>&1; rc=$?
+  assert_status 1 "$rc" "symlink cycle is bounded"
 }
 
 # --- ver --------------------------------------------------------------------
@@ -64,6 +71,13 @@ test_ver_parses_stderr_version() {
   # Older pythons print --version to stderr; ver merges 2>&1.
   local t; t="$(mktemp -d)"; make_fake_python "$t" "Python 2.7.18" 2
   assert_eq "2.7.18" "$(ver "$t/py")" "parses version printed to stderr"
+}
+
+test_ver_rejects_execution_error() {
+  load
+  local t; t="$(mktemp -d)"; make_fake_python "$t" "dyld: Library not loaded" 2
+  local out; out="$(ver "$t/py" || true)"
+  assert_eq "" "$out" "error text is not accepted as a version"
 }
 
 # --- mm_of ------------------------------------------------------------------
@@ -105,10 +119,27 @@ test_path_diagnostics_flags_missing() {
 test_uv_inventory_failure_is_unknown() {
   load
   local t; t="$(mktemp -d)"; TMPDIR="$t"
-  uv() { echo 'cache initialization failed'; return 1; }
+  printf '#!/usr/bin/env bash\necho "cache initialization failed"\nexit 1\n' > "$t/uv"
+  chmod +x "$t/uv"; PATH="$t:/usr/bin:/bin"
   local out; out="$(uv_inventory)"
   assert_contains "$out" "unknown" "uv failure remains unknown"
   assert_contains "$out" "cache initialization failed" "uv failure reason is retained"
+}
+
+test_run_probe_times_out() {
+  load
+  local t; t="$(mktemp -d)"; PROBE_TIMEOUT=1
+  printf '#!/usr/bin/env bash\n/bin/sleep 5\n' > "$t/slow"
+  chmod +x "$t/slow"
+  local rc; run_probe "$t/slow" >/dev/null 2>&1; rc=$?
+  assert_status 124 "$rc" "slow probe hits the configured timeout"
+}
+
+test_run_probe_respects_total_report_budget() {
+  load
+  REPORT_TIMEOUT=1; REPORT_STARTED=$((SECONDS - 1))
+  local rc; run_probe /usr/bin/true >/dev/null 2>&1; rc=$?
+  assert_status 124 "$rc" "exhausted report budget rejects further probes"
 }
 
 test_conda_resolution_active_when_both_commands_match() {
@@ -121,27 +152,31 @@ test_conda_resolution_split_when_python3_differs() {
   assert_eq split "$(conda_resolution_state /conda /conda/bin/python /brew/bin/python3)" "split resolution is detected"
 }
 
+test_conda_env_paths_rejects_invalid_json() {
+  load
+  local t; t="$(mktemp -d)"
+  printf '#!/usr/bin/env bash\necho not-json\n' > "$t/conda"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$t/jq"
+  chmod +x "$t/conda" "$t/jq"; PATH="$t:/usr/bin:/bin"
+  local rc; conda_env_paths >/dev/null 2>&1; rc=$?
+  assert_status 1 "$rc" "invalid conda JSON is unknown, not an empty inventory"
+}
+
 # --- Homebrew dependency state ---------------------------------------------
 test_brew_dependency_state_required() {
   load
-  brew() { printf 'tool-a\ntool-b\n'; return 0; }
-  local out; out="$(brew_dependency_state python@3.13)"
-  assert_contains "$out" "required" "successful non-empty probe is required"
-  assert_contains "$out" "tool-a" "dependent is retained"
+  local out; out="$(brew_dependency_state python@3.13 'python@3.12' 'python@3.14')"
+  assert_contains "$out" "required" "dependency-owned formula is required"
 }
 
-test_brew_dependency_state_candidate() {
+test_brew_dependency_state_orphaned() {
   load
-  brew() { return 0; }
-  assert_contains "$(brew_dependency_state python@3.13)" "candidate" "successful empty probe is a candidate"
+  assert_contains "$(brew_dependency_state python@3.13 'python@3.13' '')" "orphaned" "autoremove output is authoritative"
 }
 
-test_brew_dependency_state_failure_is_unknown() {
+test_brew_dependency_state_user_managed() {
   load
-  brew() { echo 'SHA-256: not-a-dependent'; return 1; }
-  local out; out="$(brew_dependency_state python@3.13)"
-  assert_contains "$out" "unknown" "failed probe is unknown"
-  assert_not_contains "$out" "SHA-256" "failed stdout is never dependency data"
+  assert_contains "$(brew_dependency_state python@3.13 '' 'python@3.13')" "user-managed" "requested leaf is retained"
 }
 
 # --- summarize_overlap ------------------------------------------------------
@@ -162,6 +197,12 @@ test_redundancy_counts_three() {
   load
   local out; out="$(printf 'homebrew|3.11.1\nconda|3.11.2\nuv|3.11.3\n' | summarize_overlap)"
   assert_contains "$out" "has 3 managed providers" "three managers counted"
+}
+
+test_overlap_counts_two_environments_from_same_manager() {
+  load
+  local out; out="$(printf 'conda:base|3.13.1\nconda:project|3.13.2\n' | summarize_overlap)"
+  assert_contains "$out" "has 2 managed providers" "separate conda environments are counted"
 }
 
 test_redundancy_mixed_series() {

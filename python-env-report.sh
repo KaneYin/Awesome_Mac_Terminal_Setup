@@ -16,6 +16,11 @@
 # script is executed directly (see the guard at the bottom).
 #
 set -uo pipefail   # no -e: probes are allowed to fail; we handle that per-check
+PROBE_TIMEOUT="${PY_ENV_REPORT_TIMEOUT:-3}"
+[[ "$PROBE_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || PROBE_TIMEOUT=3
+REPORT_TIMEOUT="${PY_ENV_REPORT_MAX_SECONDS:-15}"
+[[ "$REPORT_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || REPORT_TIMEOUT=15
+REPORT_STARTED=$SECONDS
 
 # ---------------------------------------------------------------------------
 # Output helpers (mirrors install.sh). Colors collapse to empty when stdout is
@@ -34,20 +39,43 @@ row()  { printf '     %s\n' "$*"; }
 
 # Resolve symlinks to a real path (readlink -f isn't on stock macOS).
 realpath_p() {
-  local p="$1"
-  while [[ -L "$p" ]]; do
+  local p="$1" hops=0 dir base
+  while [[ -L "$p" && $hops -lt 40 ]]; do
     local t; t="$(readlink "$p")"
     [[ "$t" != /* ]] && t="$(dirname "$p")/$t"
     p="$t"
+    hops=$((hops + 1))
   done
-  printf '%s' "$p"
+  [[ $hops -lt 40 ]] || return 1
+  dir="$(dirname "$p")"; base="$(basename "$p")"
+  dir="$(cd -P "$dir" 2>/dev/null && pwd)" || return 1
+  printf '%s/%s' "$dir" "$base"
 }
 
 # ver <python-binary> -> "3.13.13" or "" if it won't run.
-ver() { "$1" --version 2>&1 | awk '{print $2}'; }
+ver() {
+  local output rc
+  output="$(run_probe "$1" --version 2>&1)"; rc=$?
+  (( rc == 0 )) || return 1
+  printf '%s\n' "$output" | awk '$1 ~ /^Python$/ && $2 ~ /^[0-9]+\.[0-9]+/{print $2; exit}'
+}
 
 # mm_of "3.13.13" -> "3.13" (major.minor). Empty in -> empty out.
 mm_of() { printf '%s' "$1" | awk -F. 'NF>=2{print $1"."$2}'; }
+
+# Bound package-manager and shell probes so the installer cannot hang waiting
+# for network, locks, or broken initialization. Exit 124 means timed out.
+run_probe() {
+  local remaining=$((REPORT_TIMEOUT - (SECONDS - REPORT_STARTED))) limit="$PROBE_TIMEOUT"
+  (( remaining > 0 )) || return 124
+  (( remaining < limit )) && limit="$remaining"
+  LC_ALL=C LANG=C /usr/bin/perl -e '$s=shift; $p=fork(); defined $p or exit 125; if(!$p){setpgrp(0,0); exec @ARGV; exit 126} $SIG{ALRM}=sub{kill 15,-$p; waitpid($p,0); exit 124}; alarm $s; waitpid($p,0); alarm 0; exit($?>>8)' \
+    "$limit" "$@"
+}
+
+interpreter_identity() {
+  run_probe "$1" -c 'import platform,sys; print("|".join((sys.executable or "?",platform.python_version(),platform.python_implementation(),platform.machine(),sys.prefix,sys.base_prefix)))'
+}
 
 # path_diagnostics — identify repeated and stale PATH entries. Repetition is a
 # shell-configuration problem, not a Python-installation problem, but it often
@@ -71,14 +99,8 @@ path_diagnostics() {
 }
 
 uv_inventory() {
-  local cache output rc
-  cache="$(mktemp -d "${TMPDIR:-/tmp}/python-env-report.XXXXXX" 2>/dev/null || true)"
-  if [[ -z "$cache" ]]; then
-    printf 'unknown\ncould not create a temporary uv cache'
-    return 0
-  fi
-  output="$(UV_CACHE_DIR="$cache" uv python list --only-installed --managed-python 2>&1)"; rc=$?
-  [[ "$cache" == "${TMPDIR:-/tmp}"/python-env-report.* ]] && rm -rf -- "$cache"
+  local output rc
+  output="$(run_probe uv --no-cache python list --only-installed --managed-python 2>&1)"; rc=$?
   if (( rc == 0 )); then
     printf 'success\n%s' "$output"
   else
@@ -110,32 +132,28 @@ versioned_python_in_prefix() {
 
 conda_env_paths() {
   local output
-  if command -v jq >/dev/null 2>&1 && output="$(conda env list --json 2>/dev/null)"; then
-    printf '%s' "$output" | jq -r '.envs[]' 2>/dev/null
-  else
-    conda env list 2>/dev/null | grep -v '^#' | awk 'NF{print $NF}'
-  fi
+  command -v jq >/dev/null 2>&1 || return 1
+  output="$(run_probe conda env list --json 2>/dev/null)" || return 1
+  printf '%s' "$output" | jq -er '.envs | arrays | .[]' 2>/dev/null
 }
 
-# brew_dependency_state <formula> — print required/candidate/unknown plus any
-# installed dependents. A failed Homebrew probe must never be interpreted as
-# dependency data, even if the command happened to write something to stdout.
+# brew_dependency_state <formula> <autoremove-list> <requested-list> — trust
+# Homebrew's ownership model instead of inferring removability from versions.
 brew_dependency_state() {
-  local formula="$1" output rc
-  output="$(brew uses --installed "$formula" 2>/dev/null)"; rc=$?
-  if (( rc != 0 )); then
-    printf 'unknown\tdependency probe failed'
-  elif [[ -n "${output//[$'\t\r\n ']/}" ]]; then
-    printf 'required\t%s' "$(printf '%s' "$output" | tr '\n' ' ')"
+  local formula="$1" autoremove="$2" requested="$3"
+  if printf '%s\n' "$autoremove" | grep -Fxq "$formula"; then
+    printf 'orphaned\tlisted by brew autoremove --dry-run'
+  elif printf '%s\n' "$requested" | grep -Fxq "$formula"; then
+    printf 'user-managed\texplicitly installed'
   else
-    printf 'candidate\tno installed Homebrew dependents'
+    printf 'required\tretained as an installed dependency'
   fi
 }
 
 # summarize_overlap reads "manager|version" records. Multiple providers of
 # one series are an overlap to explain, not proof that any install is removable.
 summarize_overlap() {
-  awk -F'[|.]' 'NF>=3{print $1 "|" $2 "." $3}' | sort -u | \
+  awk -F'|' 'NF>=2{split($2,v,"."); if(v[1] && v[2]) print $1 "|" v[1] "." v[2]}' | sort -u | \
     awk -F'|' '{ managers[$2] = managers[$2] (managers[$2] ? ", " : "") $1; count[$2]++ }
       END { for (mm in count) print count[mm] "|" mm "|" managers[mm] }' | \
     sort -t'|' -k1,1rn -k2,2 | while IFS='|' read -r n mm managers; do
@@ -151,6 +169,7 @@ summarize_overlap() {
 # main — the actual report (only runs when executed, not when sourced).
 # ---------------------------------------------------------------------------
 main() {
+  local uv_overlap_records="" brew_overlap_records="" inventory_incomplete=0
   echo "${BOLD}Python Environment Report${RESET}  ${DIM}$(date '+%Y-%m-%d %H:%M')${RESET}"
 
   # --- 1. The interpreter your shell actually uses ---
@@ -164,6 +183,15 @@ main() {
   if command -v python >/dev/null 2>&1; then
     ok "python  -> $(realpath_p "$(command -v python)")  ${DIM}($(ver python))${RESET}"
   fi
+  local command_name identity executable version implementation machine prefix base_prefix
+  for command_name in python python3; do
+    command -v "$command_name" >/dev/null 2>&1 || continue
+    identity="$(interpreter_identity "$(command -v "$command_name")" 2>/dev/null || true)"
+    IFS='|' read -r executable version implementation machine prefix base_prefix <<< "$identity"
+    [[ -n "$identity" ]] || { warn "$command_name metadata probe failed"; continue; }
+    row "$command_name metadata: $implementation $version $machine"
+    [[ "$prefix" != "$base_prefix" ]] && row "  virtual environment: $prefix (base: $base_prefix)"
+  done
   if [[ -n "${VIRTUAL_ENV:-}" ]]; then
     ok "Active virtualenv: ${VIRTUAL_ENV/#$HOME/~}"
   fi
@@ -172,16 +200,29 @@ main() {
   fi
 
   # --- 2. Every python3 on PATH (shadowing order) ---
-  info "All 'python3' on PATH (first one wins)"
-  local seen_path=0 line bin
-  while IFS= read -r line; do
-    [[ "$line" == *is* ]] || continue
-    bin="${line##* }"
-    [[ -x "$bin" ]] || continue
-    printf '     %s  %s(%s)%s\n' "$bin" "$DIM" "$(ver "$bin")" "$RESET"
+  info "All 'python3' on current-process PATH (first one wins)"
+  local seen_path=0 entry bin seen_bins="" canonical
+  while IFS= read -r entry; do
+    bin="$entry/python3"; [[ -x "$bin" ]] || continue
+    canonical="$(realpath_p "$bin" 2>/dev/null || printf '%s' "$bin")"
+    printf '%s\n' "$seen_bins" | grep -Fqx "$canonical" && continue
+    seen_bins="${seen_bins}${seen_bins:+$'\n'}${canonical}"
+    printf '     %s  %s(%s)%s\n' "$bin" "$DIM" "$(ver "$bin" || printf 'unknown')" "$RESET"
     seen_path=1
-  done < <(type -a python3 2>/dev/null)
+  done < <(printf '%s' "$PATH" | tr ':' '\n')
   (( seen_path )) || row "(none)"
+
+  if [[ "${PY_ENV_REPORT_LOGIN_SHELL:-0}" == "1" ]]; then
+    local login_resolution login_rc current_resolution
+    current_resolution="$(command -v python 2>/dev/null || true)|$(command -v python3 2>/dev/null || true)"
+    login_resolution="$(run_probe zsh -lic 'command -v python 2>/dev/null; command -v python3 2>/dev/null' 2>/dev/null)"; login_rc=$?
+    if (( login_rc == 0 )); then
+      login_resolution="$(printf '%s\n' "$login_resolution" | paste -sd '|' -)"
+      [[ "$login_resolution" == "$current_resolution" ]] || warn "Login-shell resolution differs: ${login_resolution/|/, }"
+    else
+      warn "Login-shell resolution probe unavailable (status $login_rc)"
+    fi
+  fi
 
   info "PATH health"
   local path_issues
@@ -206,8 +247,10 @@ main() {
     row "${BOLD}uv-managed interpreters:${RESET}"
     if [[ "$uv_state" == "success" ]]; then
       [[ -n "$uv_output" ]] && printf '%s\n' "$uv_output" | sed 's/^/       /' || row "  (none)"
+      uv_overlap_records="$(printf '%s\n' "$uv_output" | awk '{ split($1,a,"-"); split(a[2],v,"."); if (v[1] && v[2]) print "uv:" $1 "|" v[1] "." v[2] }' | sort -u)"
     else
       warn "Could not inventory uv-managed interpreters: $(printf '%s' "$uv_output" | tail -1)"
+      inventory_incomplete=1
       local uv_dir
       uv_dir="$(uv python dir 2>/dev/null || true)"
       [[ -n "$uv_dir" ]] && row "Managed directory for manual review: $uv_dir"
@@ -220,21 +263,34 @@ main() {
   info "Homebrew pythons"
   if command -v brew >/dev/null 2>&1; then
     # macOS ships bash 3.2 (no mapfile), so read the list with a while loop.
-    local brew_py_found=0 p state detail prefix pybin version
+    local brew_py_found=0 p state detail prefix pybin version brew_autoremove brew_requested brew_formulae formulae_rc=0 auto_rc=0 requested_rc=0
+    brew_formulae="$(run_probe brew list --formula 2>/dev/null)" || formulae_rc=$?
+    if (( formulae_rc != 0 )); then
+      warn "Homebrew Python inventory failed or timed out (status $formulae_rc)"
+      inventory_incomplete=1
+    fi
+    brew_autoremove="$(run_probe brew autoremove --dry-run 2>/dev/null)" || auto_rc=$?
+    brew_requested="$(run_probe brew leaves --installed-on-request 2>/dev/null)" || requested_rc=$?
     while IFS= read -r p; do
       [[ -z "$p" ]] && continue
       brew_py_found=1
-      prefix="$(brew --prefix "$p" 2>/dev/null || true)"
+      prefix="$(run_probe brew --prefix "$p" 2>/dev/null || true)"
       pybin=""; [[ -n "$prefix" ]] && pybin="$(versioned_python_in_prefix "$prefix" || true)"
       version=""; [[ -n "$pybin" ]] && version="$(ver "$pybin")"
-      IFS=$'\t' read -r state detail <<< "$(brew_dependency_state "$p")"
+      [[ -n "$version" ]] && brew_overlap_records="${brew_overlap_records}${brew_overlap_records:+$'\n'}homebrew:${p}|${version}"
+      if (( auto_rc == 0 && requested_rc == 0 )); then
+        IFS=$'\t' read -r state detail <<< "$(brew_dependency_state "$p" "$brew_autoremove" "$brew_requested")"
+      else
+        state="unknown"; detail="Homebrew ownership probes unavailable (autoremove=$auto_rc, requested=$requested_rc)"
+      fi
       case "$state" in
-        required)  row "${GREEN}keep${RESET}      $p ${version:+($version)}  ${DIM}dependency of:${RESET} $detail" ;;
-        candidate) row "${YELLOW}candidate${RESET} $p ${version:+($version)}  ${DIM}$detail; confirm with brew autoremove --dry-run${RESET}" ;;
+        required)     row "${GREEN}keep${RESET}         $p ${version:+($version)}  ${DIM}$detail${RESET}" ;;
+        user-managed) row "${GREEN}user-managed${RESET} $p ${version:+($version)}  ${DIM}$detail${RESET}" ;;
+        orphaned)     row "${YELLOW}orphaned${RESET}     $p ${version:+($version)}  ${DIM}$detail; review before removal${RESET}" ;;
         *)         row "${YELLOW}unknown${RESET}   $p ${version:+($version)}  ${DIM}$detail; no removal advice${RESET}" ;;
       esac
-    done < <(brew list --formula 2>/dev/null | grep -E '^python@' || true)
-    (( brew_py_found )) || row "(none installed via Homebrew)"
+    done < <(printf '%s\n' "$brew_formulae" | grep -E '^python@' || true)
+    (( brew_py_found )) || { (( formulae_rc == 0 )) && row "(none installed via Homebrew)"; }
   else
     warn "Homebrew not found"
   fi
@@ -242,16 +298,20 @@ main() {
   # --- 5. conda / miniconda environments ---
   info "conda environments"
   if command -v conda >/dev/null 2>&1; then
-    local conda_root
-    conda_root="$(conda info --base 2>/dev/null || true)"
-    conda_env_paths | while IFS= read -r envpath; do
+    local conda_root conda_paths conda_rc=0
+    conda_root="$(run_probe conda info --base 2>/dev/null || true)"
+    conda_paths="$(conda_env_paths)" || conda_rc=$?
+    if (( conda_rc != 0 )); then
+      warn "Conda environment inventory failed or returned invalid JSON"
+      inventory_incomplete=1
+    fi
+    printf '%s\n' "$conda_paths" | while IFS= read -r envpath; do
       [[ -z "$envpath" ]] && continue
       local name; name="$(basename "$envpath")"
       [[ -n "$conda_root" && "$envpath" == "$conda_root" ]] && name="base"
       local pybin="$envpath/bin/python"
       local v="-"; [[ -x "$pybin" ]] && v="$(ver "$pybin")"
-      local sz; sz="$(du -sh "$envpath" 2>/dev/null | awk '{print $1}')"
-      row "$name  ${DIM}($v, ${sz:-?})${RESET}  ${DIM}$envpath${RESET}"
+      row "$name  ${DIM}($v)${RESET}  ${DIM}$envpath${RESET}"
     done
     if [[ -n "${CONDA_PREFIX:-}" ]]; then
       local resolved_python resolved_python3
@@ -294,26 +354,17 @@ main() {
   # --- Installation overlap summary ---
   info "Installation overlap (not automatic redundancy)"
   {
-    if command -v brew >/dev/null 2>&1; then
-      brew list --formula 2>/dev/null | grep -E '^python@' | while read -r p; do
-        prefix="$(brew --prefix "$p" 2>/dev/null || true)"
-        pybin=""; [[ -n "$prefix" ]] && pybin="$(versioned_python_in_prefix "$prefix" || true)"
-        [[ -x "$pybin" ]] && printf 'homebrew|%s\n' "$(ver "$pybin")"
-      done
-    fi
-    [[ -d "$fw" ]] && for d in "$fw"/*/bin/python3; do [[ -x "$d" ]] && printf 'python.org|%s\n' "$(ver "$d")"; done
+    printf '%s\n' "$brew_overlap_records"
+    [[ -d "$fw" ]] && for d in "$fw"/*/bin/python3; do [[ -x "$d" ]] && printf 'python.org:%s|%s\n' "$(basename "$(dirname "$(dirname "$d")")")" "$(ver "$d")"; done
     if command -v conda >/dev/null 2>&1; then
-      conda_env_paths | while IFS= read -r p; do
-        [[ -x "$p/bin/python" ]] && printf 'conda|%s\n' "$(ver "$p/bin/python")"
+      printf '%s\n' "$conda_paths" | while IFS= read -r p; do
+        [[ -x "$p/bin/python" ]] && printf 'conda:%s|%s\n' "$(basename "$p")" "$(ver "$p/bin/python")"
       done
     fi
-    if [[ -d "${HOME}/.local/share/uv/python" ]]; then
-      for d in "${HOME}/.local/share/uv/python"/cpython-*; do
-        [[ -x "$d/bin/python3" ]] && printf 'uv|%s\n' "$(ver "$d/bin/python3")"
-      done
-    fi
-    [[ -x /usr/bin/python3 ]] && printf 'apple|%s\n' "$(ver /usr/bin/python3)"
+    printf '%s\n' "$uv_overlap_records"
+    [[ -x /usr/bin/python3 ]] && printf 'apple:system|%s\n' "$(ver /usr/bin/python3)"
   } | summarize_overlap
+  (( inventory_incomplete )) && warn "Overlap summary is partial because one or more inventories were unavailable."
 
   echo
   echo "${DIM}Read-only audit. Nothing was installed or removed. Prefer 'uv' for new"

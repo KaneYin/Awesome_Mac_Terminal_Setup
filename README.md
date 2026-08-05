@@ -235,15 +235,20 @@ It reports:
 - which interpreters `python` and `python3` actually resolve to
 - duplicate and stale `PATH` entries that can cause surprising resolution
 - `uv`-managed, Homebrew, conda, python.org-framework, and macOS-system Pythons
-- Homebrew dependency probes as `keep`, `candidate`, or `unknown` (probe failure)
-- conda environments with their versions and on-disk sizes
+- Homebrew ownership as `keep`, `user-managed`, `orphaned`, or `unknown`
+- conda environments with their versions (without a slow full-disk size scan)
 - installation overlap by manager and `major.minor`, without treating matching
   versions as proof that either installation is removable
 
-The report never recommends deleting Apple-managed Python. Treat `candidate`
-as a prompt for further validation—not permission to uninstall. In particular,
-confirm Homebrew changes with `brew autoremove --dry-run` and check the projects
-or tools that consume an interpreter first.
+The report never recommends deleting Apple-managed Python. `orphaned` means
+Homebrew itself included the formula in `brew autoremove --dry-run`; still check
+projects or tools that consume an interpreter before removing it.
+
+External probes are limited to 3 seconds each and the report has a 15-second
+overall budget. Override these with `PY_ENV_REPORT_TIMEOUT` and
+`PY_ENV_REPORT_MAX_SECONDS`. To compare against an interactive login shell,
+opt in with `PY_ENV_REPORT_LOGIN_SHELL=1`; it is disabled during installation
+because shell startup hooks may write state and add latency.
 
 ### [tldr](https://tldr.sh) — Simplified Man Pages
 
@@ -309,7 +314,7 @@ dependency-free unit-test suite that runs on the stock macOS bash:
 ./tests/run.sh
 ```
 
-See [`docs/TESTING.md`](docs/TESTING.md) for an overview of all 46 tests and
+See [`docs/TESTING.md`](docs/TESTING.md) for an overview of all 52 tests and
 what each covers.
 
 CI runs this same suite on every push and PR — see [`docs/CI.md`](docs/CI.md).
