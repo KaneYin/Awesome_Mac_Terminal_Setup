@@ -18,9 +18,18 @@
 set -uo pipefail   # no -e: probes are allowed to fail; we handle that per-check
 PROBE_TIMEOUT="${PY_ENV_REPORT_TIMEOUT:-3}"
 [[ "$PROBE_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || PROBE_TIMEOUT=3
-REPORT_TIMEOUT="${PY_ENV_REPORT_MAX_SECONDS:-15}"
-[[ "$REPORT_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || REPORT_TIMEOUT=15
+REPORT_TIMEOUT="${PY_ENV_REPORT_MAX_SECONDS:-60}"
+[[ "$REPORT_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || REPORT_TIMEOUT=60
 REPORT_STARTED=$SECONDS
+REPORT_BUDGET_WARNED=0
+
+if command -v gtimeout >/dev/null 2>&1; then
+  PROBE_IMPL=gtimeout
+elif [[ -x /usr/bin/perl ]]; then
+  PROBE_IMPL=perl
+else
+  PROBE_IMPL=none
+fi
 
 # ---------------------------------------------------------------------------
 # Output helpers (mirrors install.sh). Colors collapse to empty when stdout is
@@ -55,7 +64,7 @@ realpath_p() {
 # ver <python-binary> -> "3.13.13" or "" if it won't run.
 ver() {
   local output rc
-  output="$(run_probe "$1" --version 2>&1)"; rc=$?
+  output="$(run_local_probe "$1" --version 2>&1)"; rc=$?
   (( rc == 0 )) || return 1
   printf '%s\n' "$output" | awk '$1 ~ /^Python$/ && $2 ~ /^[0-9]+\.[0-9]+/{print $2; exit}'
 }
@@ -63,18 +72,50 @@ ver() {
 # mm_of "3.13.13" -> "3.13" (major.minor). Empty in -> empty out.
 mm_of() { printf '%s' "$1" | awk -F. 'NF>=2{print $1"."$2}'; }
 
-# Bound package-manager and shell probes so the installer cannot hang waiting
-# for network, locks, or broken initialization. Exit 124 means timed out.
+# Execute one command with the best timeout implementation available. Local
+# interpreter probes use this without consuming the package-manager budget.
+run_with_timeout() {
+  local limit="$1"; shift
+  case "$PROBE_IMPL" in
+    gtimeout)
+      LC_ALL=C LANG=C gtimeout --signal=TERM "${limit}s" "$@"
+      ;;
+    perl)
+      LC_ALL=C LANG=C /usr/bin/perl -e '$s=shift; $p=fork(); defined $p or exit 125; if(!$p){setpgrp(0,0); exec {$ARGV[0]} @ARGV; exit 126} $SIG{ALRM}=sub{kill 15,-$p; waitpid($p,0); exit 124}; alarm $s; waitpid($p,0); alarm 0; exit($?>>8)' \
+        "$limit" "$@"
+      ;;
+    none)
+      LC_ALL=C LANG=C "$@"
+      ;;
+  esac
+}
+
+run_local_probe() {
+  run_with_timeout "$PROBE_TIMEOUT" "$@"
+}
+
+report_budget_exhausted() {
+  (( SECONDS - REPORT_STARTED >= REPORT_TIMEOUT ))
+}
+
+announce_report_budget_exhaustion() {
+  if report_budget_exhausted && (( ! REPORT_BUDGET_WARNED )); then
+    warn "Time budget exhausted — remaining manager probes skipped"
+    REPORT_BUDGET_WARNED=1
+  fi
+}
+
+# Bound package-manager and login-shell probes by both per-command and total
+# deadlines. Exit 124 means the command timed out or the total budget is gone.
 run_probe() {
   local remaining=$((REPORT_TIMEOUT - (SECONDS - REPORT_STARTED))) limit="$PROBE_TIMEOUT"
   (( remaining > 0 )) || return 124
   (( remaining < limit )) && limit="$remaining"
-  LC_ALL=C LANG=C /usr/bin/perl -e '$s=shift; $p=fork(); defined $p or exit 125; if(!$p){setpgrp(0,0); exec @ARGV; exit 126} $SIG{ALRM}=sub{kill 15,-$p; waitpid($p,0); exit 124}; alarm $s; waitpid($p,0); alarm 0; exit($?>>8)' \
-    "$limit" "$@"
+  run_with_timeout "$limit" "$@"
 }
 
 interpreter_identity() {
-  run_probe "$1" -c 'import platform,sys; print("|".join((sys.executable or "?",platform.python_version(),platform.python_implementation(),platform.machine(),sys.prefix,sys.base_prefix)))'
+  run_local_probe "$1" -c 'import platform,sys; print("|".join((sys.executable or "?",platform.python_version(),platform.python_implementation(),platform.machine(),sys.prefix,sys.base_prefix)))'
 }
 
 # path_diagnostics — identify repeated and stale PATH entries. Repetition is a
@@ -130,11 +171,37 @@ versioned_python_in_prefix() {
   return 1
 }
 
+jq_available() {
+  command -v jq >/dev/null 2>&1
+}
+
 conda_env_paths() {
   local output
-  command -v jq >/dev/null 2>&1 || return 1
-  output="$(run_probe conda env list --json 2>/dev/null)" || return 1
-  printf '%s' "$output" | jq -er '.envs | arrays | .[]' 2>/dev/null
+  if jq_available; then
+    output="$(run_probe conda env list --json 2>/dev/null)" || return 1
+    printf '%s' "$output" | jq -er '.envs | arrays | .[]' 2>/dev/null
+  else
+    output="$(run_probe conda env list 2>/dev/null)" || return 1
+    printf '%s\n' "$output" | awk 'NF && $1 !~ /^#/ {print $NF}'
+  fi
+}
+
+current_command_resolution() {
+  command -v python 2>/dev/null || printf '%s\n' '-'
+  command -v python3 2>/dev/null || printf '%s\n' '-'
+}
+
+login_shell_resolution() {
+  run_probe zsh -lic 'printf "%s\n" "$(command -v python 2>/dev/null || printf -)" "$(command -v python3 2>/dev/null || printf -)"'
+}
+
+conda_env_size() {
+  local output rc
+  output="$(run_local_probe du -sm "$1" 2>/dev/null)"; rc=$?
+  if (( rc == 0 )); then
+    output="$(printf '%s\n' "$output" | awk 'NR==1 && $1 ~ /^[0-9]+$/ {print $1 " MiB"}')"
+  fi
+  printf '%s' "${output:-size unavailable}"
 }
 
 # brew_dependency_state <formula> <autoremove-list> <requested-list> — trust
@@ -153,12 +220,19 @@ brew_dependency_state() {
 # summarize_overlap reads "manager|version" records. Multiple providers of
 # one series are an overlap to explain, not proof that any install is removable.
 summarize_overlap() {
-  awk -F'|' 'NF>=2{split($2,v,"."); if(v[1] && v[2]) print $1 "|" v[1] "." v[2]}' | sort -u | \
+  local records instances
+  records="$(cat)"
+  printf '%s\n' "$records" | \
+    awk -F'|' 'NF>=2{split($1,m,":"); split($2,v,"."); if(m[1] && v[1] && v[2]) print m[1] "|" v[1] "." v[2]}' | sort -u | \
     awk -F'|' '{ managers[$2] = managers[$2] (managers[$2] ? ", " : "") $1; count[$2]++ }
       END { for (mm in count) print count[mm] "|" mm "|" managers[mm] }' | \
     sort -t'|' -k1,1rn -k2,2 | while IFS='|' read -r n mm managers; do
     if (( n > 1 )); then
       warn "Python $mm has $n managed providers ($managers) — review purpose and consumers; do not remove by version count alone."
+      instances="$(printf '%s\n' "$records" | awk -F'|' -v wanted="$mm" '
+        NF>=2 { split($2,v,"."); series=v[1] "." v[2] }
+        series == wanted { printf "%s%s (%s)", separator, $1, $2; separator=", " }')"
+      [[ -n "$instances" ]] && row "Instances: $instances"
     else
       ok "Python $mm — one discovered provider ($managers)."
     fi
@@ -171,6 +245,7 @@ summarize_overlap() {
 main() {
   local uv_overlap_records="" brew_overlap_records="" inventory_incomplete=0
   echo "${BOLD}Python Environment Report${RESET}  ${DIM}$(date '+%Y-%m-%d %H:%M')${RESET}"
+  [[ "$PROBE_IMPL" == "none" ]] && warn "No timeout utility available; probes will run without timeout protection"
 
   # --- 1. The interpreter your shell actually uses ---
   info "Active command resolution"
@@ -214,8 +289,8 @@ main() {
 
   if [[ "${PY_ENV_REPORT_LOGIN_SHELL:-0}" == "1" ]]; then
     local login_resolution login_rc current_resolution
-    current_resolution="$(command -v python 2>/dev/null || true)|$(command -v python3 2>/dev/null || true)"
-    login_resolution="$(run_probe zsh -lic 'command -v python 2>/dev/null; command -v python3 2>/dev/null' 2>/dev/null)"; login_rc=$?
+    current_resolution="$(current_command_resolution | paste -sd '|' -)"
+    login_resolution="$(login_shell_resolution 2>/dev/null)"; login_rc=$?
     if (( login_rc == 0 )); then
       login_resolution="$(printf '%s\n' "$login_resolution" | paste -sd '|' -)"
       [[ "$login_resolution" == "$current_resolution" ]] || warn "Login-shell resolution differs: ${login_resolution/|/, }"
@@ -247,7 +322,7 @@ main() {
     row "${BOLD}uv-managed interpreters:${RESET}"
     if [[ "$uv_state" == "success" ]]; then
       [[ -n "$uv_output" ]] && printf '%s\n' "$uv_output" | sed 's/^/       /' || row "  (none)"
-      uv_overlap_records="$(printf '%s\n' "$uv_output" | awk '{ split($1,a,"-"); split(a[2],v,"."); if (v[1] && v[2]) print "uv:" $1 "|" v[1] "." v[2] }' | sort -u)"
+      uv_overlap_records="$(printf '%s\n' "$uv_output" | awk '{ split($1,a,"-"); split(a[2],v,"."); if (v[1] && v[2]) print "uv:" $1 "|" a[2] }' | sort -u)"
     else
       warn "Could not inventory uv-managed interpreters: $(printf '%s' "$uv_output" | tail -1)"
       inventory_incomplete=1
@@ -258,6 +333,7 @@ main() {
   else
     warn "uv not installed — run ./install.sh (or: brew install uv)"
   fi
+  announce_report_budget_exhaustion
 
   # --- 4. Homebrew pythons (and why they're here) ---
   info "Homebrew pythons"
@@ -294,6 +370,7 @@ main() {
   else
     warn "Homebrew not found"
   fi
+  announce_report_budget_exhaustion
 
   # --- 5. conda / miniconda environments ---
   info "conda environments"
@@ -310,8 +387,11 @@ main() {
       local name; name="$(basename "$envpath")"
       [[ -n "$conda_root" && "$envpath" == "$conda_root" ]] && name="base"
       local pybin="$envpath/bin/python"
-      local v="-"; [[ -x "$pybin" ]] && v="$(ver "$pybin")"
-      row "$name  ${DIM}($v)${RESET}  ${DIM}$envpath${RESET}"
+      local v="-" size=""; [[ -x "$pybin" ]] && v="$(ver "$pybin")"
+      if [[ "${PY_ENV_REPORT_SIZES:-0}" == "1" ]]; then
+        size="$(conda_env_size "$envpath")"
+      fi
+      row "$name  ${DIM}($v${size:+, $size})${RESET}  ${DIM}$envpath${RESET}"
     done
     if [[ -n "${CONDA_PREFIX:-}" ]]; then
       local resolved_python resolved_python3
@@ -327,6 +407,7 @@ main() {
   else
     row "(conda not installed)"
   fi
+  announce_report_budget_exhaustion
 
   # --- 6. python.org framework installs (manual installers) ---
   info "python.org framework installs"
@@ -358,7 +439,10 @@ main() {
     [[ -d "$fw" ]] && for d in "$fw"/*/bin/python3; do [[ -x "$d" ]] && printf 'python.org:%s|%s\n' "$(basename "$(dirname "$(dirname "$d")")")" "$(ver "$d")"; done
     if command -v conda >/dev/null 2>&1; then
       printf '%s\n' "$conda_paths" | while IFS= read -r p; do
-        [[ -x "$p/bin/python" ]] && printf 'conda:%s|%s\n' "$(basename "$p")" "$(ver "$p/bin/python")"
+        local instance
+        instance="$(basename "$p")"
+        [[ -n "$conda_root" && "$p" == "$conda_root" ]] && instance="base"
+        [[ -x "$p/bin/python" ]] && printf 'conda:%s|%s\n' "$instance" "$(ver "$p/bin/python")"
       done
     fi
     printf '%s\n' "$uv_overlap_records"

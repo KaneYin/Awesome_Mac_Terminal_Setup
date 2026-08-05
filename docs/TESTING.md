@@ -27,9 +27,9 @@ bash tests/test_python_env_report.sh
 | `tests/lib.sh` | The harness: assertions + a `run_tests` discovery/runner |
 | `tests/run.sh` | Runs all `tests/test_*.sh` files and aggregates the result |
 | `tests/test_install.sh` | 21 tests for `install.sh` |
-| `tests/test_python_env_report.sh` | 31 tests for `python-env-report.sh` |
+| `tests/test_python_env_report.sh` | 38 tests for `python-env-report.sh` |
 
-**52 tests total.**
+**59 tests total.**
 
 ## How it works
 
@@ -124,7 +124,8 @@ assertion aborts that test and prints a diff-style message.
 ### `summarize_overlap` (manager-aware installation overlap)
 - One provider is named without suggesting removal.
 - Multiple managers for the same series are counted and named.
-- Separate environments owned by the same manager are counted independently.
+- Separate environments owned by the same manager count as one provider, while
+  their instance names remain visible when multiple managers overlap.
 - Matching versions explicitly do not imply that an installation is removable.
 - Blank input produces no summary lines.
 

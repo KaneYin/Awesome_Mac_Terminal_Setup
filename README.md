@@ -236,7 +236,8 @@ It reports:
 - duplicate and stale `PATH` entries that can cause surprising resolution
 - `uv`-managed, Homebrew, conda, python.org-framework, and macOS-system Pythons
 - Homebrew ownership as `keep`, `user-managed`, `orphaned`, or `unknown`
-- conda environments with their versions (without a slow full-disk size scan)
+- conda environments with their versions; opt into bounded size scans with
+  `PY_ENV_REPORT_SIZES=1`
 - installation overlap by manager and `major.minor`, without treating matching
   versions as proof that either installation is removable
 
@@ -244,9 +245,12 @@ The report never recommends deleting Apple-managed Python. `orphaned` means
 Homebrew itself included the formula in `brew autoremove --dry-run`; still check
 projects or tools that consume an interpreter before removing it.
 
-External probes are limited to 3 seconds each and the report has a 15-second
-overall budget. Override these with `PY_ENV_REPORT_TIMEOUT` and
-`PY_ENV_REPORT_MAX_SECONDS`. To compare against an interactive login shell,
+External probes are limited to 3 seconds each and manager probes share a
+60-second overall budget. Local interpreter probes do not consume that budget.
+Timeout protection degrades from `gtimeout` to macOS Perl and, when neither is
+available, direct execution with a visible warning. Override the limits with
+`PY_ENV_REPORT_TIMEOUT` and `PY_ENV_REPORT_MAX_SECONDS`. To compare against an
+interactive login shell,
 opt in with `PY_ENV_REPORT_LOGIN_SHELL=1`; it is disabled during installation
 because shell startup hooks may write state and add latency.
 

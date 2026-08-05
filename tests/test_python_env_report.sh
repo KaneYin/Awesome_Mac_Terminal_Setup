@@ -142,6 +142,21 @@ test_run_probe_respects_total_report_budget() {
   assert_status 124 "$rc" "exhausted report budget rejects further probes"
 }
 
+test_budget_exhaustion_warning_is_emitted_once() {
+  load
+  REPORT_TIMEOUT=1; REPORT_STARTED=$((SECONDS - 1)); REPORT_BUDGET_WARNED=0
+  local out count
+  out="$(announce_report_budget_exhaustion; announce_report_budget_exhaustion)"
+  count="$(printf '%s\n' "$out" | grep -c 'Time budget exhausted')"
+  assert_eq 1 "$count" "budget exhaustion has one visible breakpoint"
+}
+
+test_run_probe_without_timeout_backend_executes_command() {
+  load
+  PROBE_IMPL=none
+  assert_eq "ok" "$(run_local_probe /bin/echo ok)" "no-timeout fallback executes directly"
+}
+
 test_conda_resolution_active_when_both_commands_match() {
   load
   assert_eq active "$(conda_resolution_state /conda /conda/bin/python /conda/bin/python3)" "both commands use conda"
@@ -160,6 +175,38 @@ test_conda_env_paths_rejects_invalid_json() {
   chmod +x "$t/conda" "$t/jq"; PATH="$t:/usr/bin:/bin"
   local rc; conda_env_paths >/dev/null 2>&1; rc=$?
   assert_status 1 "$rc" "invalid conda JSON is unknown, not an empty inventory"
+}
+
+test_conda_env_paths_falls_back_without_jq() {
+  load
+  jq_available() { return 1; }
+  local t; t="$(mktemp -d)"
+  printf '#!/usr/bin/env bash\nprintf "# conda environments:\\nbase * /opt/conda\\nproject /opt/conda/envs/project\\n"\n' > "$t/conda"
+  chmod +x "$t/conda"; PATH="$t:/usr/bin:/bin"
+  local out; out="$(conda_env_paths)"
+  assert_contains "$out" "/opt/conda" "plain conda listing includes base"
+  assert_contains "$out" "/opt/conda/envs/project" "plain conda listing includes environments"
+}
+
+test_versioned_python_in_prefix_finds_interpreter() {
+  load
+  local t; t="$(mktemp -d)"; mkdir -p "$t/bin"; : > "$t/bin/python3.13"; chmod +x "$t/bin/python3.13"
+  assert_eq "$t/bin/python3.13" "$(versioned_python_in_prefix "$t")" "versioned interpreter is discovered"
+}
+
+test_login_shell_resolution_preserves_missing_placeholder() {
+  load
+  local t; t="$(mktemp -d)"
+  printf '#!/usr/bin/env bash\nprintf -- "-\\n/usr/bin/python3\\n"\n' > "$t/zsh"
+  chmod +x "$t/zsh"; PATH="$t:/usr/bin:/bin"
+  assert_eq "-|/usr/bin/python3" "$(login_shell_resolution | paste -sd '|' -)" "missing python keeps its field"
+}
+
+test_conda_env_size_marks_failed_probe_unavailable() {
+  load
+  PROBE_IMPL=none
+  du() { return 1; }
+  assert_eq "size unavailable" "$(conda_env_size /fake/env)" "failed size scan is visible"
 }
 
 # --- Homebrew dependency state ---------------------------------------------
@@ -199,10 +246,18 @@ test_redundancy_counts_three() {
   assert_contains "$out" "has 3 managed providers" "three managers counted"
 }
 
-test_overlap_counts_two_environments_from_same_manager() {
+test_overlap_collapses_instances_of_one_manager() {
+  load
+  local out; out="$(printf 'conda:base|3.11.9\nconda:project|3.11.4\nhomebrew:python@3.11|3.11.9\n' | summarize_overlap)"
+  assert_contains "$out" "2 managed providers (conda, homebrew)" "same-manager instances count once"
+  assert_contains "$out" "conda:base (3.11.9)" "instance detail is retained"
+  assert_contains "$out" "conda:project (3.11.4)" "all manager instances remain visible"
+}
+
+test_overlap_one_manager_multiple_instances_is_one_provider() {
   load
   local out; out="$(printf 'conda:base|3.13.1\nconda:project|3.13.2\n' | summarize_overlap)"
-  assert_contains "$out" "has 2 managed providers" "separate conda environments are counted"
+  assert_contains "$out" "one discovered provider (conda)" "one manager remains one provider"
 }
 
 test_redundancy_mixed_series() {
