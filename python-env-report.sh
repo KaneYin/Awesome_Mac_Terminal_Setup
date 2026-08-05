@@ -4,8 +4,9 @@
 #
 # Inventories every Python interpreter the shell can see (active PATH pick,
 # uv-managed, Homebrew, conda, python.org framework, macOS system), shows conda
-# environments, and flags likely-redundant installs. Read-only: it inspects and
-# reports, it never installs or removes anything.
+# environments, explains command resolution, and identifies installations that
+# merit review. Read-only: it inspects and reports, it never installs or removes
+# anything.
 #
 # Usage:
 #   ./python-env-report.sh
@@ -48,16 +49,100 @@ ver() { "$1" --version 2>&1 | awk '{print $2}'; }
 # mm_of "3.13.13" -> "3.13" (major.minor). Empty in -> empty out.
 mm_of() { printf '%s' "$1" | awk -F. 'NF>=2{print $1"."$2}'; }
 
-# summarize_redundancy — read one version string per line on stdin and print an
-# ok/warn line per distinct major.minor series, warning when more than one
-# install provides the same series. Blank lines (interpreters that wouldn't run)
-# are ignored. Kept separate from main() so it can be unit-tested directly.
-summarize_redundancy() {
-  awk -F. 'NF>=2{print $1"."$2}' | sort | uniq -c | sort -rn | while read -r n mm; do
-    if (( n > 1 )); then
-      warn "Python $mm provided by $n separate installs — consolidate if you can."
+# path_diagnostics — identify repeated and stale PATH entries. Repetition is a
+# shell-configuration problem, not a Python-installation problem, but it often
+# explains surprising command resolution.
+path_diagnostics() {
+  local old_ifs="$IFS" entry seen="" reported=""
+  IFS=:
+  for entry in $PATH; do
+    [[ -z "$entry" ]] && entry="."
+    if printf '%s\n' "$seen" | grep -Fqx "$entry"; then
+      if ! printf '%s\n' "$reported" | grep -Fqx "$entry"; then
+        printf 'duplicate\t%s\n' "$entry"
+        reported="${reported}${reported:+$'\n'}${entry}"
+      fi
     else
-      ok "Python $mm — single install."
+      seen="${seen}${seen:+$'\n'}${entry}"
+    fi
+    [[ -d "$entry" ]] || printf 'missing\t%s\n' "$entry"
+  done
+  IFS="$old_ifs"
+}
+
+uv_inventory() {
+  local cache output rc
+  cache="$(mktemp -d "${TMPDIR:-/tmp}/python-env-report.XXXXXX" 2>/dev/null || true)"
+  if [[ -z "$cache" ]]; then
+    printf 'unknown\ncould not create a temporary uv cache'
+    return 0
+  fi
+  output="$(UV_CACHE_DIR="$cache" uv python list --only-installed --managed-python 2>&1)"; rc=$?
+  [[ "$cache" == "${TMPDIR:-/tmp}"/python-env-report.* ]] && rm -rf -- "$cache"
+  if (( rc == 0 )); then
+    printf 'success\n%s' "$output"
+  else
+    printf 'unknown\n%s' "$(printf '%s' "$output" | tail -1)"
+  fi
+}
+
+conda_resolution_state() {
+  local prefix="$1" python_path="$2" python3_path="$3"
+  if [[ "$python_path" == "$prefix"/* && "$python3_path" == "$prefix"/* ]]; then
+    printf 'active'
+  else
+    printf 'split'
+  fi
+}
+
+versioned_python_in_prefix() {
+  local prefix="$1" candidate name
+  [[ -d "$prefix/bin" ]] || return 1
+  for candidate in "$prefix"/bin/python3.*; do
+    [[ -x "$candidate" ]] || continue
+    name="$(basename "$candidate")"
+    [[ "$name" =~ ^python3\.[0-9]+$ ]] || continue
+    printf '%s' "$candidate"
+    return 0
+  done
+  return 1
+}
+
+conda_env_paths() {
+  local output
+  if command -v jq >/dev/null 2>&1 && output="$(conda env list --json 2>/dev/null)"; then
+    printf '%s' "$output" | jq -r '.envs[]' 2>/dev/null
+  else
+    conda env list 2>/dev/null | grep -v '^#' | awk 'NF{print $NF}'
+  fi
+}
+
+# brew_dependency_state <formula> — print required/candidate/unknown plus any
+# installed dependents. A failed Homebrew probe must never be interpreted as
+# dependency data, even if the command happened to write something to stdout.
+brew_dependency_state() {
+  local formula="$1" output rc
+  output="$(brew uses --installed "$formula" 2>/dev/null)"; rc=$?
+  if (( rc != 0 )); then
+    printf 'unknown\tdependency probe failed'
+  elif [[ -n "${output//[$'\t\r\n ']/}" ]]; then
+    printf 'required\t%s' "$(printf '%s' "$output" | tr '\n' ' ')"
+  else
+    printf 'candidate\tno installed Homebrew dependents'
+  fi
+}
+
+# summarize_overlap reads "manager|version" records. Multiple providers of
+# one series are an overlap to explain, not proof that any install is removable.
+summarize_overlap() {
+  awk -F'[|.]' 'NF>=3{print $1 "|" $2 "." $3}' | sort -u | \
+    awk -F'|' '{ managers[$2] = managers[$2] (managers[$2] ? ", " : "") $1; count[$2]++ }
+      END { for (mm in count) print count[mm] "|" mm "|" managers[mm] }' | \
+    sort -t'|' -k1,1rn -k2,2 | while IFS='|' read -r n mm managers; do
+    if (( n > 1 )); then
+      warn "Python $mm has $n managed providers ($managers) — review purpose and consumers; do not remove by version count alone."
+    else
+      ok "Python $mm — one discovered provider ($managers)."
     fi
   done
 }
@@ -69,7 +154,7 @@ main() {
   echo "${BOLD}Python Environment Report${RESET}  ${DIM}$(date '+%Y-%m-%d %H:%M')${RESET}"
 
   # --- 1. The interpreter your shell actually uses ---
-  info "Active interpreter (what 'python3' runs)"
+  info "Active command resolution"
   if command -v python3 >/dev/null 2>&1; then
     local active; active="$(command -v python3)"
     ok "python3 -> $(realpath_p "$active")  ${DIM}($(ver python3))${RESET}"
@@ -98,16 +183,34 @@ main() {
   done < <(type -a python3 2>/dev/null)
   (( seen_path )) || row "(none)"
 
+  info "PATH health"
+  local path_issues
+  path_issues="$(path_diagnostics)"
+  if [[ -z "$path_issues" ]]; then
+    ok "No duplicate or stale PATH entries detected"
+  else
+    while IFS=$'\t' read -r kind path; do
+      [[ "$kind" == "duplicate" ]] && warn "Duplicate PATH entry: $path"
+      [[ "$kind" == "missing" ]] && warn "Missing PATH directory: $path"
+    done <<< "$path_issues"
+  fi
+
   # --- 3. uv (package/version manager) + its managed interpreters ---
   info "uv"
   if command -v uv >/dev/null 2>&1; then
     ok "uv installed: $(uv --version 2>/dev/null)"
-    if uv python list --only-installed >/dev/null 2>&1; then
-      row "${BOLD}Installed interpreters uv can see:${RESET}"
-      uv python list --only-installed 2>/dev/null | sed 's/^/       /'
+    local uv_output uv_state uv_result
+    uv_result="$(uv_inventory)"
+    uv_state="$(printf '%s\n' "$uv_result" | head -1)"
+    uv_output="$(printf '%s\n' "$uv_result" | tail -n +2)"
+    row "${BOLD}uv-managed interpreters:${RESET}"
+    if [[ "$uv_state" == "success" ]]; then
+      [[ -n "$uv_output" ]] && printf '%s\n' "$uv_output" | sed 's/^/       /' || row "  (none)"
     else
-      row "${BOLD}Installed interpreters uv can see:${RESET}"
-      uv python list 2>/dev/null | grep -v '<download available>' | sed 's/^/       /'
+      warn "Could not inventory uv-managed interpreters: $(printf '%s' "$uv_output" | tail -1)"
+      local uv_dir
+      uv_dir="$(uv python dir 2>/dev/null || true)"
+      [[ -n "$uv_dir" ]] && row "Managed directory for manual review: $uv_dir"
     fi
   else
     warn "uv not installed — run ./install.sh (or: brew install uv)"
@@ -117,17 +220,19 @@ main() {
   info "Homebrew pythons"
   if command -v brew >/dev/null 2>&1; then
     # macOS ships bash 3.2 (no mapfile), so read the list with a while loop.
-    local brew_py_found=0 p deps
+    local brew_py_found=0 p state detail prefix pybin version
     while IFS= read -r p; do
       [[ -z "$p" ]] && continue
       brew_py_found=1
-      # Which installed formulae depend on this python? If any, it's NOT redundant.
-      deps="$(brew uses --installed "$p" 2>/dev/null | tr '\n' ' ')"
-      if [[ -n "${deps// }" ]]; then
-        row "${GREEN}keep${RESET}  $p  ${DIM}dependency of:${RESET} ${deps}"
-      else
-        row "${YELLOW}review${RESET} $p  ${DIM}no formula depends on it (top-level)${RESET}"
-      fi
+      prefix="$(brew --prefix "$p" 2>/dev/null || true)"
+      pybin=""; [[ -n "$prefix" ]] && pybin="$(versioned_python_in_prefix "$prefix" || true)"
+      version=""; [[ -n "$pybin" ]] && version="$(ver "$pybin")"
+      IFS=$'\t' read -r state detail <<< "$(brew_dependency_state "$p")"
+      case "$state" in
+        required)  row "${GREEN}keep${RESET}      $p ${version:+($version)}  ${DIM}dependency of:${RESET} $detail" ;;
+        candidate) row "${YELLOW}candidate${RESET} $p ${version:+($version)}  ${DIM}$detail; confirm with brew autoremove --dry-run${RESET}" ;;
+        *)         row "${YELLOW}unknown${RESET}   $p ${version:+($version)}  ${DIM}$detail; no removal advice${RESET}" ;;
+      esac
     done < <(brew list --formula 2>/dev/null | grep -E '^python@' || true)
     (( brew_py_found )) || row "(none installed via Homebrew)"
   else
@@ -137,17 +242,28 @@ main() {
   # --- 5. conda / miniconda environments ---
   info "conda environments"
   if command -v conda >/dev/null 2>&1; then
-    conda env list 2>/dev/null | grep -v '^#' | while read -r name _marker path; do
-      [[ -z "$name" ]] && continue
-      # `conda env list` prints "name  *  /path" or "name  /path".
-      local envpath="$path"; [[ -z "$envpath" ]] && envpath="$_marker"
+    local conda_root
+    conda_root="$(conda info --base 2>/dev/null || true)"
+    conda_env_paths | while IFS= read -r envpath; do
+      [[ -z "$envpath" ]] && continue
+      local name; name="$(basename "$envpath")"
+      [[ -n "$conda_root" && "$envpath" == "$conda_root" ]] && name="base"
       local pybin="$envpath/bin/python"
       local v="-"; [[ -x "$pybin" ]] && v="$(ver "$pybin")"
       local sz; sz="$(du -sh "$envpath" 2>/dev/null | awk '{print $1}')"
       row "$name  ${DIM}($v, ${sz:-?})${RESET}  ${DIM}$envpath${RESET}"
     done
-    warn "conda 'base' auto-activation shadows other python3s. Disable with:"
-    row "  conda config --set auto_activate_base false"
+    if [[ -n "${CONDA_PREFIX:-}" ]]; then
+      local resolved_python resolved_python3
+      resolved_python="$(command -v python 2>/dev/null || true)"
+      resolved_python3="$(command -v python3 2>/dev/null || true)"
+      if [[ "$(conda_resolution_state "$CONDA_PREFIX" "$resolved_python" "$resolved_python3")" == "active" ]]; then
+        ok "Active conda environment supplies both python and python3"
+      else
+        warn "Active conda environment does not control both commands: python=${resolved_python:-missing}, python3=${resolved_python3:-missing}"
+        row "Review PATH ordering before changing or removing any interpreter."
+      fi
+    fi
   else
     row "(conda not installed)"
   fi
@@ -162,8 +278,7 @@ main() {
       [[ -x "$d/bin/python3" ]] || continue
       row "${YELLOW}review${RESET} $d  ${DIM}($(ver "$d/bin/python3"))${RESET}"
     done
-    row "${DIM}These are manual .pkg installs — often redundant if conda/brew/uv already"
-    row "provide the same version. Remove with: sudo rm -rf $fw/<ver>${RESET}"
+    row "${DIM}Manual .pkg installs are review candidates only after checking projects and environments.${RESET}"
   else
     row "(none)"
   fi
@@ -176,22 +291,32 @@ main() {
     row "(no /usr/bin/python3)"
   fi
 
-  # --- Redundancy summary ---
-  info "Redundancy check"
-  # Collect interpreter versions across sources, then group by major.minor.
+  # --- Installation overlap summary ---
+  info "Installation overlap (not automatic redundancy)"
   {
-    for b in /usr/bin/python3 /usr/local/bin/python3 /opt/homebrew/bin/python3; do
-      [[ -x "$b" ]] && ver "$b"
-    done
-    [[ -d "$fw" ]] && for d in "$fw"/*/bin/python3; do [[ -x "$d" ]] && ver "$d"; done
-    if command -v conda >/dev/null 2>&1; then
-      conda env list 2>/dev/null | grep -v '^#' | awk '{print $NF}' | \
-        while read -r p; do [[ -x "$p/bin/python" ]] && ver "$p/bin/python"; done
+    if command -v brew >/dev/null 2>&1; then
+      brew list --formula 2>/dev/null | grep -E '^python@' | while read -r p; do
+        prefix="$(brew --prefix "$p" 2>/dev/null || true)"
+        pybin=""; [[ -n "$prefix" ]] && pybin="$(versioned_python_in_prefix "$prefix" || true)"
+        [[ -x "$pybin" ]] && printf 'homebrew|%s\n' "$(ver "$pybin")"
+      done
     fi
-  } | summarize_redundancy
+    [[ -d "$fw" ]] && for d in "$fw"/*/bin/python3; do [[ -x "$d" ]] && printf 'python.org|%s\n' "$(ver "$d")"; done
+    if command -v conda >/dev/null 2>&1; then
+      conda_env_paths | while IFS= read -r p; do
+        [[ -x "$p/bin/python" ]] && printf 'conda|%s\n' "$(ver "$p/bin/python")"
+      done
+    fi
+    if [[ -d "${HOME}/.local/share/uv/python" ]]; then
+      for d in "${HOME}/.local/share/uv/python"/cpython-*; do
+        [[ -x "$d/bin/python3" ]] && printf 'uv|%s\n' "$(ver "$d/bin/python3")"
+      done
+    fi
+    [[ -x /usr/bin/python3 ]] && printf 'apple|%s\n' "$(ver /usr/bin/python3)"
+  } | summarize_overlap
 
   echo
-  echo "${DIM}Read-only report. Nothing was installed or removed. Prefer 'uv' for new"
+  echo "${DIM}Read-only audit. Nothing was installed or removed. Prefer 'uv' for new"
   echo "project envs: uv venv && uv sync${RESET}"
 }
 

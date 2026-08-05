@@ -27,9 +27,9 @@ bash tests/test_python_env_report.sh
 | `tests/lib.sh` | The harness: assertions + a `run_tests` discovery/runner |
 | `tests/run.sh` | Runs all `tests/test_*.sh` files and aggregates the result |
 | `tests/test_install.sh` | 21 tests for `install.sh` |
-| `tests/test_python_env_report.sh` | 17 tests for `python-env-report.sh` |
+| `tests/test_python_env_report.sh` | 25 tests for `python-env-report.sh` |
 
-**38 tests total.**
+**46 tests total.**
 
 ## How it works
 
@@ -111,15 +111,21 @@ assertion aborts that test and prints a diff-style message.
 - `test_mm_of_empty_is_empty` — empty input → empty output.
 - `test_mm_of_major_only_is_empty` — `3` (no minor) → empty.
 
-### `summarize_redundancy` (the redundant-install detector)
-- `test_redundancy_single_install` — one version of a series → "single install".
-- `test_redundancy_flags_duplicate_series` — two patch releases of `3.13` → "provided by 2 separate installs".
-- `test_redundancy_counts_three` — three installs of one series counted correctly.
-- `test_redundancy_mixed_series` — multiple series summarized independently.
-- `test_redundancy_ignores_blank_lines` — blank input (interpreters that wouldn't run) → no output.
+### PATH and Homebrew probe safety
+- Duplicate and missing PATH entries are reported.
+- Successful Homebrew probes distinguish dependents from an empty result.
+- Failed Homebrew probes remain `unknown`, even when failure writes to stdout.
+- Failed uv inventory remains `unknown` and retains a diagnostic reason.
+- Active and split Conda command resolution are distinguished.
+
+### `summarize_overlap` (manager-aware installation overlap)
+- One provider is named without suggesting removal.
+- Multiple managers for the same series are counted and named.
+- Matching versions explicitly do not imply that an installation is removable.
+- Blank input produces no summary lines.
 
 ### Black-box behavior
-- `test_report_runs_and_has_sections` — executing the script exits `0` and prints the header, the redundancy section, and the read-only footer.
+- `test_report_runs_and_has_sections` — executing the script exits `0` and prints the header, overlap section, and read-only footer.
 - `test_sourcing_does_not_run_report` — sourcing the script defines its functions **without** emitting the report (proves the `main()` guard works).
 
 ## Adding a test
